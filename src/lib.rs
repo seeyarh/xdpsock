@@ -17,16 +17,20 @@ pub mod socket;
 pub mod umem;
 
 #[cfg(all(target_pointer_width = "64", target_family = "unix"))]
+pub mod xsk;
+
+#[cfg(all(target_pointer_width = "64", target_family = "unix"))]
 mod util;
 
 #[cfg(all(target_pointer_width = "64", target_family = "unix"))]
 pub use socket::{
-    BindFlags, Config as SocketConfig, LibbpfFlags, RxQueue, Socket, TxQueue, XdpFlags,
+    BindFlags, LibbpfFlags, RxQueue, Socket, SocketConfig, SocketConfigBuilder, TxQueue, XdpFlags,
 };
 
 #[cfg(all(target_pointer_width = "64", target_family = "unix"))]
 pub use umem::{
-    AccessError, CompQueue, Config as UmemConfig, DataError, FillQueue, FrameDesc, Umem, WriteError,
+    AccessError, CompQueue, DataError, FillQueue, FrameDesc, Umem, UmemBuilder, UmemConfig,
+    UmemConfigBuilder, WriteError,
 };
 
 #[cfg(test)]

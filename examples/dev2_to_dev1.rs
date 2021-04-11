@@ -18,7 +18,7 @@ use tokio::{
 };
 use xsk_rs::{
     socket, BindFlags, CompQueue, FillQueue, FrameDesc, LibbpfFlags, RxQueue, Socket, SocketConfig,
-    TxQueue, Umem, UmemConfig, XdpFlags,
+    SocketConfigBuilder, TxQueue, Umem, UmemConfig, UmemConfigBuilder, XdpFlags,
 };
 
 use setup::{LinkIpAddr, VethConfig};
@@ -488,24 +488,20 @@ fn run_example(config: &Config, veth_config: &VethConfig) {
     // Create umem and socket configs
     let frame_count = config.fill_q_size + config.comp_q_size;
 
-    let umem_config = UmemConfig::new(
-        NonZeroU32::new(frame_count).unwrap(),
-        NonZeroU32::new(config.frame_size).unwrap(),
-        config.fill_q_size,
-        config.comp_q_size,
-        0,
-        false,
-    )
-    .unwrap();
+    let umem_config = UmemConfigBuilder::new()
+        .frame_count(frame_count)
+        .frame_size(config.frame_size)
+        .fill_queue_size(config.fill_q_size)
+        .comp_queue_size(config.comp_q_size)
+        .build()
+        .expect("failed to buld umem config");
 
-    let socket_config = SocketConfig::new(
-        config.rx_q_size,
-        config.tx_q_size,
-        LibbpfFlags::empty(),
-        XdpFlags::empty(),
-        BindFlags::XDP_USE_NEED_WAKEUP,
-    )
-    .unwrap();
+    let socket_config = SocketConfigBuilder::new()
+        .rx_queue_size(config.rx_q_size)
+        .tx_queue_size(config.tx_q_size)
+        .bind_flags(BindFlags::XDP_USE_NEED_WAKEUP)
+        .build()
+        .expect("failed to build socket config");
 
     let dev1 = build_socket_and_umem(
         umem_config.clone(),

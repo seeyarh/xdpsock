@@ -4,7 +4,7 @@ use std::{convert::TryInto, error::Error, fmt, io, marker::PhantomData, mem::May
 
 use crate::socket::{self, Fd};
 
-use super::{config::Config, mmap::MmapArea};
+use super::{config::UmemConfig, mmap::MmapArea};
 
 enum FrameState {}
 
@@ -220,12 +220,12 @@ impl FrameDesc<'_> {
 /// Initial step for building a UMEM. This creates the underlying
 /// `mmap` area.
 pub struct UmemBuilder {
-    config: Config,
+    config: UmemConfig,
 }
 
 /// Use the `mmap`'d region to create the UMEM.
 pub struct UmemBuilderWithMmap {
-    config: Config,
+    config: UmemConfig,
     mmap_area: MmapArea,
 }
 
@@ -247,7 +247,7 @@ impl Drop for XskUmem {
 /// frames.  It provides the underlying working memory for an AF_XDP
 /// socket.
 pub struct Umem<'a> {
-    config: Config,
+    config: UmemConfig,
     frame_size: usize,
     umem_len: usize,
     mtu: usize,
@@ -367,12 +367,12 @@ impl<'a> UmemBuilderWithMmap {
 }
 
 impl Umem<'_> {
-    pub fn builder(config: Config) -> UmemBuilder {
+    pub fn builder(config: UmemConfig) -> UmemBuilder {
         UmemBuilder { config }
     }
 
     /// Config used for building the UMEM.
-    pub fn config(&self) -> &Config {
+    pub fn config(&self) -> &UmemConfig {
         &self.config
     }
 
@@ -641,7 +641,7 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::*;
-    use crate::umem::Config;
+    use crate::umem::UmemConfig;
 
     const FRAME_COUNT: u32 = 8;
     const FRAME_SIZE: u32 = 2048;
@@ -650,16 +650,8 @@ mod tests {
         (0..len).map(|_| rand::random::<u8>()).collect()
     }
 
-    fn umem_config() -> Config {
-        Config::new(
-            NonZeroU32::new(FRAME_COUNT).unwrap(),
-            NonZeroU32::new(FRAME_SIZE).unwrap(),
-            4,
-            4,
-            0,
-            false,
-        )
-        .unwrap()
+    fn umem_config() -> UmemConfig {
+        UmemConfig::new(FRAME_COUNT, FRAME_SIZE, 4, 4, 0, false).unwrap()
     }
 
     fn umem<'a>() -> (Umem<'a>, FillQueue<'a>, CompQueue<'a>, Vec<FrameDesc<'a>>) {
@@ -674,15 +666,7 @@ mod tests {
 
     #[test]
     fn umem_create_succeeds_when_frame_count_is_one() {
-        let config = Config::new(
-            NonZeroU32::new(1).unwrap(),
-            NonZeroU32::new(4096).unwrap(),
-            4,
-            4,
-            0,
-            false,
-        )
-        .unwrap();
+        let config = UmemConfig::new(1, 4096, 4, 4, 0, false).unwrap();
 
         Umem::builder(config)
             .create_mmap()
@@ -693,15 +677,7 @@ mod tests {
 
     #[test]
     fn umem_create_succeeds_when_fill_size_is_one() {
-        let config = Config::new(
-            NonZeroU32::new(16).unwrap(),
-            NonZeroU32::new(4096).unwrap(),
-            1,
-            4,
-            0,
-            false,
-        )
-        .unwrap();
+        let config = UmemConfig::new(16, 4096, 1, 4, 0, false).unwrap();
 
         Umem::builder(config)
             .create_mmap()
@@ -712,15 +688,7 @@ mod tests {
 
     #[test]
     fn umem_create_succeeds_when_comp_size_is_one() {
-        let config = Config::new(
-            NonZeroU32::new(16).unwrap(),
-            NonZeroU32::new(4096).unwrap(),
-            4,
-            1,
-            0,
-            false,
-        )
-        .unwrap();
+        let config = UmemConfig::new(16, 4096, 4, 1, 0, false).unwrap();
 
         Umem::builder(config)
             .create_mmap()
@@ -732,15 +700,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn umem_create_fails_when_frame_size_is_lt_2048() {
-        let config = Config::new(
-            NonZeroU32::new(1).unwrap(),
-            NonZeroU32::new(2047).unwrap(),
-            4,
-            4,
-            0,
-            false,
-        )
-        .unwrap();
+        let config = UmemConfig::new(1, 2047, 4, 4, 0, false).unwrap();
 
         Umem::builder(config)
             .create_mmap()
@@ -751,15 +711,7 @@ mod tests {
 
     #[test]
     fn mtu_is_correct() {
-        let config = Config::new(
-            NonZeroU32::new(1).unwrap(),
-            NonZeroU32::new(2048).unwrap(),
-            4,
-            4,
-            512,
-            false,
-        )
-        .unwrap();
+        let config = UmemConfig::new(1, 2048, 4, 4, 512, false).unwrap();
 
         let (umem, _fq, _cq, _frame_descs) = Umem::builder(config)
             .create_mmap()

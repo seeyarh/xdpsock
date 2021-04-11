@@ -44,7 +44,7 @@ fn build_socket_and_umem<'a, 'umem>(
 
 fn hello_xdp(veth_config: &VethConfig) {
     // Create umem and socket configs
-    let umem_config = UmemConfig::default(NonZeroU32::new(16).unwrap(), false);
+    let umem_config = UmemConfig::default();
     let socket_config = SocketConfig::default();
 
     let mut dev1 = build_socket_and_umem(

@@ -1,22 +1,10 @@
 use xsk_rs::{
-    socket::{Config as SocketConfig, *},
-    umem::{Config as UmemConfig, *},
+    socket::*,
+    umem::*,
+    xsk::{Xsk, build_socket_and_umem}
 };
 
 mod veth_setup;
-mod xsk_setup;
-
-pub use xsk_setup::{SocketConfigBuilder, UmemConfigBuilder};
-
-pub struct Xsk<'a> {
-    pub if_name: String,
-    pub fill_q: FillQueue<'a>,
-    pub comp_q: CompQueue<'a>,
-    pub tx_q: TxQueue<'a>,
-    pub rx_q: RxQueue<'a>,
-    pub frame_descs: Vec<FrameDesc<'a>>,
-    pub umem: Umem<'a>,
-}
 
 pub async fn run_test<F>(
     dev1_umem_config: Option<UmemConfig>,
@@ -29,7 +17,7 @@ pub async fn run_test<F>(
 {
     let inner = move |dev1_if_name: String, dev2_if_name: String| {
         // Create the socket for the first interfaace
-        let ((umem, fill_q, comp_q, frame_descs), (tx_q, rx_q)) = xsk_setup::build_socket_and_umem(
+        let ((umem, fill_q, comp_q, frame_descs), (tx_q, rx_q)) = build_socket_and_umem(
             dev1_umem_config,
             dev1_socket_config,
             &dev1_if_name,
@@ -46,7 +34,7 @@ pub async fn run_test<F>(
             umem,
         };
 
-        let ((umem, fill_q, comp_q, frame_descs), (tx_q, rx_q)) = xsk_setup::build_socket_and_umem(
+        let ((umem, fill_q, comp_q, frame_descs), (tx_q, rx_q)) = build_socket_and_umem(
             dev2_umem_config,
             dev2_socket_config,
             &dev2_if_name,

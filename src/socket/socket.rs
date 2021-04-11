@@ -16,7 +16,7 @@ use crate::{
     util,
 };
 
-use super::{config::Config, fd::Fd, poll};
+use super::{config::SocketConfig, fd::Fd, poll};
 
 #[derive(Debug)]
 pub enum SocketCreateError {
@@ -89,7 +89,7 @@ impl Socket<'_> {
     ///
     /// May require root permissions to create and bind.
     pub fn new<'a, 'umem>(
-        config: Config,
+        config: SocketConfig,
         umem: &mut Umem<'umem>,
         if_name: &'a str,
         queue_id: u32,

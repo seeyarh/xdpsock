@@ -2,48 +2,31 @@ use libbpf_sys::XDP_PACKET_HEADROOM;
 use rusty_fork::rusty_fork_test;
 use std::{thread, time::Duration};
 use tokio::runtime::Runtime;
-use xsk_rs::{socket::Config as SocketConfig, umem::Config as UmemConfig};
 
 mod setup;
 
-use setup::{SocketConfigBuilder, UmemConfigBuilder, Xsk};
+use xsk_rs::{
+    socket::{SocketConfig, SocketConfigBuilder},
+    umem::{UmemConfig, UmemConfigBuilder},
+    xsk::Xsk,
+};
 
 fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
-    let umem_config = UmemConfigBuilder {
-        frame_count: 8,
-        frame_size: 2048,
-        fill_queue_size: 4,
-        comp_queue_size: 4,
-        ..UmemConfigBuilder::default()
-    }
-    .build();
+    let umem_config = UmemConfigBuilder::new()
+        .frame_count(8)
+        .frame_size(2048)
+        .fill_queue_size(4)
+        .comp_queue_size(4)
+        .build()
+        .expect("failed to build umem config");
 
-    let socket_config = SocketConfigBuilder {
-        tx_queue_size: 4,
-        rx_queue_size: 4,
-        ..SocketConfigBuilder::default()
-    }
-    .build();
+    let socket_config = SocketConfigBuilder::new()
+        .tx_queue_size(4)
+        .rx_queue_size(4)
+        .build()
+        .expect("failed to build socket config");
 
     (Some(umem_config), Some(socket_config))
-}
-
-fn default_config_builders() -> (UmemConfigBuilder, SocketConfigBuilder) {
-    let umem_config_builder = UmemConfigBuilder {
-        frame_count: 8,
-        frame_size: 2048,
-        fill_queue_size: 4,
-        comp_queue_size: 4,
-        ..UmemConfigBuilder::default()
-    };
-
-    let socket_config_builder = SocketConfigBuilder {
-        tx_queue_size: 4,
-        rx_queue_size: 4,
-        ..SocketConfigBuilder::default()
-    };
-
-    (umem_config_builder, socket_config_builder)
 }
 
 rusty_fork_test! {
@@ -187,7 +170,7 @@ rusty_fork_test! {
 
 rusty_fork_test! {
     #[test]
-    fn recvd_packet_offset_after_tx_includes_xdp_and_frame_headroom() {
+    fn rx_queue_recvd_packet_offset_after_tx_includes_xdp_and_frame_headroom() {
     fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
         // Add a frame in the dev1 fill queue ready to receive
         assert_eq!(unsafe { dev1.fill_q.produce(&dev1.frame_descs[0..1]) }, 1);
@@ -212,6 +195,9 @@ rusty_fork_test! {
             1
         );
 
+        // Wait briefly so we don't try to consume too early
+        thread::sleep(Duration::from_millis(5));
+
         // Read on dev1
         assert_eq!(dev1.rx_q.consume(&mut dev1.frame_descs[..]), 1);
 
@@ -224,24 +210,24 @@ rusty_fork_test! {
         );
     }
 
-    let (dev1_umem_config_builder, dev1_socket_config_builder) = default_config_builders();
     let (dev2_umem_config, dev2_socket_config) = build_configs();
 
     // Add to the frame headroom
-    let dev1_umem_config_builder = UmemConfigBuilder {
-        frame_headroom: 512,
-        ..dev1_umem_config_builder
-    };
+    let dev1_umem_config = UmemConfigBuilder::new()
+        .frame_count(8)
+        .frame_size(2048)
+        .fill_queue_size(4)
+        .comp_queue_size(4)
+        .frame_headroom(512).build().expect("failed to build umem config");
+    let dev1_socket_config = SocketConfigBuilder::new().tx_queue_size(4).rx_queue_size(4).build().expect("failed to build socket config");
 
-    let dev1_umem_config = Some(dev1_umem_config_builder.build());
-    let dev1_socket_config = Some(dev1_socket_config_builder.build());
 
         let mut rt = Runtime::new().unwrap();
         rt.block_on(
             async {
     setup::run_test(
-        dev1_umem_config,
-        dev1_socket_config,
+        Some(dev1_umem_config),
+        Some(dev1_socket_config),
         dev2_umem_config,
         dev2_socket_config,
         test_fn,

@@ -3,22 +3,22 @@ mod setup;
 use rusty_fork::rusty_fork_test;
 use tokio::runtime::Runtime;
 
-use xsk_rs::{socket::Config as SocketConfig, umem::Config as UmemConfig};
-
-use setup::{SocketConfigBuilder, UmemConfigBuilder, Xsk};
+use xsk_rs::{
+    socket::{SocketConfig, SocketConfigBuilder},
+    umem::{UmemConfig, UmemConfigBuilder},
+    xsk::Xsk,
+};
 
 fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
-    let umem_config = UmemConfigBuilder {
-        frame_count: 8,
-        ..UmemConfigBuilder::default()
-    }
-    .build();
+    let umem_config = UmemConfigBuilder::new()
+        .frame_count(8)
+        .build()
+        .expect("failed to build umem config");
 
-    let socket_config = SocketConfigBuilder {
-        tx_queue_size: 4,
-        ..SocketConfigBuilder::default()
-    }
-    .build();
+    let socket_config = SocketConfigBuilder::new()
+        .tx_queue_size(4)
+        .build()
+        .expect("failed to build socket config");
 
     (Some(umem_config), Some(socket_config))
 }
