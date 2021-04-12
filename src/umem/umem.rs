@@ -6,7 +6,22 @@ use crate::socket::{self, Fd};
 
 use super::{config::UmemConfig, mmap::MmapArea};
 
-enum FrameState {}
+/// Represents where in the tx/rx lifecycle a Frame is
+#[derive(Debug, Clone, PartialEq)]
+pub enum FrameStatus {
+    Free,
+    OnTxQueue,
+    OnRxQueue,
+}
+
+impl FrameStatus {
+    pub fn is_free(&self) -> bool {
+        match self {
+            Free => true,
+            _ => false,
+        }
+    }
+}
 
 /// Describes a UMEM frame's address and size of its current contents.
 ///
@@ -21,17 +36,18 @@ enum FrameState {}
 /// [RxQueue](struct.RxQueue.html), the `len` field will be set by the
 /// kernel and dictates the number of bytes the user should read from
 /// the UMEM.
-#[derive(Debug, PartialEq)]
-pub struct FrameDesc<'umem> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct Frame<'umem> {
     addr: usize,
     len: usize,
     options: u32,
     mtu: usize,
     _marker: PhantomData<&'umem ()>,
     mmap_area: Arc<MmapArea>,
+    pub status: FrameStatus,
 }
 
-impl FrameDesc<'_> {
+impl Frame<'_> {
     #[inline]
     pub fn addr(&self) -> usize {
         self.addr
@@ -281,7 +297,7 @@ impl<'a> UmemBuilderWithMmap {
     /// [CompQueue](struct.CompQueue.html).
     pub fn create_umem(
         mut self,
-    ) -> io::Result<(Umem<'a>, FillQueue<'a>, CompQueue<'a>, Vec<FrameDesc<'a>>)> {
+    ) -> io::Result<(Umem<'a>, FillQueue<'a>, CompQueue<'a>, Vec<Frame<'a>>)> {
         let umem_create_config = xsk_umem_config {
             fill_size: self.config.fill_queue_size(),
             comp_size: self.config.comp_queue_size(),
@@ -320,7 +336,7 @@ impl<'a> UmemBuilderWithMmap {
         let xdp_packet_headroom = XDP_PACKET_HEADROOM as usize;
         let mtu = frame_size - (xdp_packet_headroom + frame_headroom);
 
-        let mut frame_descs: Vec<FrameDesc> = Vec::with_capacity(frame_count);
+        let mut frames: Vec<Frame> = Vec::with_capacity(frame_count);
 
         let mmap = Arc::new(self.mmap_area);
 
@@ -329,16 +345,17 @@ impl<'a> UmemBuilderWithMmap {
             let len = 0;
             let options = 0;
 
-            let frame_desc = FrameDesc {
+            let frame = Frame {
                 addr,
                 len,
                 options,
                 mtu,
                 _marker: PhantomData,
                 mmap_area: mmap.clone(),
+                status: FrameStatus::Free,
             };
 
-            frame_descs.push(frame_desc);
+            frames.push(frame);
         }
 
         let fill_queue = FillQueue {
@@ -362,7 +379,7 @@ impl<'a> UmemBuilderWithMmap {
             _marker: PhantomData,
         };
 
-        Ok((umem, fill_queue, comp_queue, frame_descs))
+        Ok((umem, fill_queue, comp_queue, frames))
     }
 }
 
@@ -423,7 +440,7 @@ impl FillQueue<'_> {
     /// to the constraint mentioned in the above paragraph, this
     /// should always be the length of `descs` or `0`.
     #[inline]
-    pub unsafe fn produce(&mut self, descs: &[FrameDesc]) -> usize {
+    pub unsafe fn produce(&mut self, descs: &mut [Frame]) -> usize {
         // usize <-> u64 'as' conversions are ok as the crate's top
         // level conditional compilation flags (see lib.rs) guarantee
         // that size_of<usize> = size_of<u64>
@@ -462,7 +479,7 @@ impl FillQueue<'_> {
     #[inline]
     pub unsafe fn produce_and_wakeup(
         &mut self,
-        descs: &[FrameDesc],
+        descs: &mut [Frame],
         socket_fd: &mut Fd,
         poll_timeout: i32,
     ) -> io::Result<usize> {
@@ -654,7 +671,7 @@ mod tests {
         UmemConfig::new(FRAME_COUNT, FRAME_SIZE, 4, 4, 0, false).unwrap()
     }
 
-    fn umem<'a>() -> (Umem<'a>, FillQueue<'a>, CompQueue<'a>, Vec<FrameDesc<'a>>) {
+    fn umem<'a>() -> (Umem<'a>, FillQueue<'a>, CompQueue<'a>, Vec<Frame<'a>>) {
         let config = umem_config();
 
         Umem::builder(config)

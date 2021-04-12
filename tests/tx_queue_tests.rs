@@ -8,7 +8,7 @@ use xsk_rs::{
 
 fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
     let umem_config = UmemConfigBuilder::new()
-        .frame_count(8)
+        .frame_count(16)
         .build()
         .expect("failed to build umem config");
 
@@ -24,7 +24,7 @@ rusty_fork_test! {
     #[test]
     fn tx_queue_produce_tx_size_frames() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let frame_descs = dev1.frame_descs;
+            let frame_descs = dev1.tx_frames;
 
             assert_eq!(unsafe { dev1.tx_q.produce(&frame_descs[..4]) }, 4);
         }
@@ -46,7 +46,7 @@ rusty_fork_test! {
     #[test]
     fn tx_queue_produce_gt_tx_size_frames() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let frame_descs = dev1.frame_descs;
+            let frame_descs = dev1.tx_frames;
 
             assert_eq!(unsafe { dev1.tx_q.produce(&frame_descs[..5]) }, 0);
         }
@@ -68,7 +68,7 @@ rusty_fork_test! {
     #[test]
     fn tx_queue_produce_frames_until_tx_queue_full() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let frame_descs = dev1.frame_descs;
+            let frame_descs = dev1.tx_frames;
 
             assert_eq!(unsafe { dev1.tx_q.produce(&frame_descs[..2]) }, 2);
             assert_eq!(unsafe { dev1.tx_q.produce(&frame_descs[2..3]) }, 1);
