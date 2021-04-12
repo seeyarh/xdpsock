@@ -1,13 +1,8 @@
-mod setup;
+mod util;
 
 use std::{net::Ipv4Addr, num::NonZeroU32, str, thread};
-use tokio::{
-    runtime::Runtime,
-    sync::oneshot::{self, error::TryRecvError},
-};
+use veth_util_rs::{add_veth_link, VethConfig, VethPair};
 use xsk_rs::{FillQueue, FrameDesc, RxQueue, Socket, SocketConfig, TxQueue, Umem, UmemConfig};
-
-use setup::{LinkIpAddr, VethConfig};
 
 // Put umem at bottom so drop order is correct
 struct SocketState<'umem> {
@@ -42,7 +37,7 @@ fn build_socket_and_umem<'a, 'umem>(
     }
 }
 
-fn hello_xdp(veth_config: &VethConfig) {
+fn hello_xdp(veth_pair: &VethPair) {
     // Create umem and socket configs
     let umem_config = UmemConfig::default();
     let socket_config = SocketConfig::default();
@@ -50,11 +45,11 @@ fn hello_xdp(veth_config: &VethConfig) {
     let mut dev1 = build_socket_and_umem(
         umem_config.clone(),
         socket_config.clone(),
-        &veth_config.dev1_name(),
+        &veth_pair.dev1().ifname(),
         0,
     );
 
-    let mut dev2 = build_socket_and_umem(umem_config, socket_config, &veth_config.dev2_name(), 0);
+    let mut dev2 = build_socket_and_umem(umem_config, socket_config, &veth_pair.dev2().ifname(), 0);
 
     let mut dev1_frames = dev1.frame_descs;
 
@@ -117,47 +112,18 @@ fn hello_xdp(veth_config: &VethConfig) {
 }
 
 fn main() {
-    let (startup_w, mut startup_r) = oneshot::channel();
-    let (shutdown_w, shutdown_r) = oneshot::channel();
-
-    let veth_config = VethConfig::new(
-        String::from("xsk_ex_dev1"),
-        String::from("xsk_ex_dev2"),
-        [0xf6, 0xe0, 0xf6, 0xc9, 0x60, 0x0a],
-        [0x4a, 0xf1, 0x30, 0xeb, 0x0d, 0x31],
-        LinkIpAddr::new(Ipv4Addr::new(192, 168, 69, 1), 24),
-        LinkIpAddr::new(Ipv4Addr::new(192, 168, 69, 2), 24),
-    );
-
-    let veth_config_clone = veth_config.clone();
-
     // We'll keep track of ctrl+c events but not let them kill the process
     // immediately as we may need to clean up the veth pair.
-    let ctrl_c_events = setup::ctrl_channel().unwrap();
+    let ctrl_c_events = util::ctrl_channel().unwrap();
 
-    let veth_handle = thread::spawn(move || {
-        let mut runtime = Runtime::new().unwrap();
-
-        runtime.block_on(setup::run_veth_link(
-            &veth_config_clone,
-            startup_w,
-            shutdown_r,
-        ))
-    });
-
-    loop {
-        match startup_r.try_recv() {
-            Ok(_) => break,
-            Err(TryRecvError::Empty) => (),
-            Err(TryRecvError::Closed) => panic!("failed to set up veth pair"),
-        }
-    }
+    let veth_config = VethConfig::default();
+    let veth_pair = add_veth_link(&veth_config).expect("failed to create veth pair");
 
     // Run example in separate thread so that if it panics we can clean up here
     let (example_done_tx, example_done_rx) = crossbeam_channel::bounded(1);
 
     let handle = thread::spawn(move || {
-        hello_xdp(&veth_config);
+        hello_xdp(&veth_pair);
         let _ = example_done_tx.send(());
     });
 
@@ -173,11 +139,4 @@ fn main() {
             println!("SIGINT received, deleting veth pair and exiting");
         }
     }
-
-    // Delete link
-    if let Err(e) = shutdown_w.send(()) {
-        eprintln!("veth link thread returned unexpectedly: {:?}", e);
-    }
-
-    veth_handle.join().unwrap();
 }

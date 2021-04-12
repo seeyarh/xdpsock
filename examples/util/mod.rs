@@ -1,8 +1,6 @@
 use crossbeam_channel::{self, Receiver};
 use etherparse::PacketBuilder;
 
-use super::VethConfig;
-
 pub fn ctrl_channel() -> Result<Receiver<()>, ctrlc::Error> {
     let (tx, rx) = crossbeam_channel::bounded(1);
     ctrlc::set_handler(move || {
@@ -17,20 +15,21 @@ fn generate_random_bytes(len: usize) -> Vec<u8> {
 }
 
 // Generate an ETH frame w/ UDP as transport layer and payload size `payload_len`
-pub fn generate_eth_frame(veth_config: &VethConfig, payload_len: usize) -> Vec<u8> {
-    let builder = PacketBuilder::ethernet2(
-        veth_config.dev1_addr().clone(), // src mac
-        veth_config.dev2_addr().clone(), // dst mac
-    )
-    .ipv4(
-        veth_config.dev1_ip_addr().octets(), // src ip
-        veth_config.dev2_ip_addr().octets(), // dst ip
-        20,                                  // time to live
-    )
-    .udp(
-        1234, // src port
-        1234, // dst port
-    );
+pub fn generate_eth_frame(
+    mac1: &[u8; 6],
+    mac2: &[u8; 6],
+    ip1: [u8; 4],
+    ip2: [u8; 4],
+    payload_len: usize,
+) -> Vec<u8> {
+    let builder = PacketBuilder::ethernet2(*mac1, *mac2)
+        .ipv4(
+            ip1, ip2, 20, // time to live
+        )
+        .udp(
+            1234, // src port
+            1234, // dst port
+        );
 
     let payload = generate_random_bytes(payload_len);
 

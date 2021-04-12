@@ -1,14 +1,11 @@
+mod setup;
 use rusty_fork::rusty_fork_test;
 use std::{thread, time::Duration};
-use tokio::runtime::Runtime;
-
 use xsk_rs::{
     socket::{SocketConfig, SocketConfigBuilder},
     umem::{UmemConfig, UmemConfigBuilder},
     xsk::Xsk,
 };
-
-mod setup;
 
 fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
     let umem_config = UmemConfigBuilder::new()
@@ -38,18 +35,12 @@ rusty_fork_test! {
         let (dev1_umem_config, dev1_socket_config) = build_configs();
         let (dev2_umem_config, dev2_socket_config) = build_configs();
 
-        let mut rt = Runtime::new().unwrap();
-        rt.block_on(
-            async {
         setup::run_test(
             dev1_umem_config,
             dev1_socket_config,
             dev2_umem_config,
             dev2_socket_config,
             test_fn,
-        )
-        .await;
-            }
         );
     }
 }
@@ -78,20 +69,13 @@ rusty_fork_test! {
         let (dev1_umem_config, dev1_socket_config) = build_configs();
         let (dev2_umem_config, dev2_socket_config) = build_configs();
 
-        let mut rt = Runtime::new().unwrap();
-
-        // Execute the future, blocking the current thread until completion
-        rt.block_on(
-            async {
         setup::run_test(
             dev1_umem_config,
             dev1_socket_config,
             dev2_umem_config,
             dev2_socket_config,
             test_fn,
-        )
-        .await;
-            });
+        );
     }
 }
 
@@ -124,18 +108,12 @@ rusty_fork_test! {
         let (dev1_umem_config, dev1_socket_config) = build_configs();
         let (dev2_umem_config, dev2_socket_config) = build_configs();
 
-        let mut rt = Runtime::new().unwrap();
-
-        rt.block_on(
-            async {
         setup::run_test(
             dev1_umem_config,
             dev1_socket_config,
             dev2_umem_config,
             dev2_socket_config,
             test_fn,
-        )
-        .await;
-            });
+        );
     }
 }

@@ -1,4 +1,4 @@
-mod setup;
+mod util;
 
 use clap::{App, Arg};
 use crossbeam_channel::{self, Receiver, Sender};
@@ -6,22 +6,17 @@ use std::{
     cmp,
     fmt::Debug,
     net::Ipv4Addr,
-    num::NonZeroU32,
     str::FromStr,
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::Instant,
 };
-use tokio::{
-    runtime::Runtime,
-    sync::oneshot::{self, error::TryRecvError},
-};
 use xsk_rs::{
-    socket, BindFlags, CompQueue, FillQueue, FrameDesc, LibbpfFlags, RxQueue, Socket, SocketConfig,
-    SocketConfigBuilder, TxQueue, Umem, UmemConfig, UmemConfigBuilder, XdpFlags,
+    socket, BindFlags, CompQueue, FillQueue, FrameDesc, RxQueue, Socket, SocketConfig,
+    SocketConfigBuilder, TxQueue, Umem, UmemConfig, UmemConfigBuilder,
 };
 
-use setup::{LinkIpAddr, VethConfig};
+use veth_util_rs::{add_veth_link, VethConfig, VethPair};
 
 // Reqd for the multithreaded case to signal when all packets have
 // been sent
@@ -484,7 +479,7 @@ fn build_socket_and_umem(
     }
 }
 
-fn run_example(config: &Config, veth_config: &VethConfig) {
+fn run_example(config: &Config, veth_pair: &VethPair) {
     // Create umem and socket configs
     let frame_count = config.fill_q_size + config.comp_q_size;
 
@@ -506,14 +501,22 @@ fn run_example(config: &Config, veth_config: &VethConfig) {
     let dev1 = build_socket_and_umem(
         umem_config.clone(),
         socket_config.clone(),
-        veth_config.dev1_name(),
+        veth_pair.dev1().ifname(),
         0,
     );
 
-    let mut dev2 = build_socket_and_umem(umem_config, socket_config, veth_config.dev2_name(), 0);
+    let mut dev2 = build_socket_and_umem(umem_config, socket_config, veth_pair.dev2().ifname(), 0);
 
     // Copy over some bytes to dev2s umem to transmit
-    let eth_frame = setup::generate_eth_frame(veth_config, config.payload_size);
+    let ip1 = Ipv4Addr::new(1, 1, 1, 1).octets();
+    let ip2 = Ipv4Addr::new(2, 2, 2, 2).octets();
+    let eth_frame = util::generate_eth_frame(
+        veth_pair.dev1().mac_addr(),
+        veth_pair.dev2().mac_addr(),
+        ip1,
+        ip2,
+        config.payload_size,
+    );
 
     for desc in dev2.frames.iter_mut() {
         unsafe {
@@ -723,52 +726,21 @@ fn main() {
 
     let config = get_args();
 
-    let veth_config = VethConfig::new(
-        String::from("xsk_ex_dev1"),
-        String::from("xsk_ex_dev2"),
-        [0xf6, 0xe0, 0xf6, 0xc9, 0x60, 0x0a],
-        [0x4a, 0xf1, 0x30, 0xeb, 0x0d, 0x31],
-        LinkIpAddr::new(Ipv4Addr::new(192, 168, 69, 1), 24),
-        LinkIpAddr::new(Ipv4Addr::new(192, 168, 69, 2), 24),
-    );
-
-    let veth_config_clone = veth_config.clone();
+    let veth_config = VethConfig::default();
+    let veth_pair = add_veth_link(&veth_config).expect("failed to create veth pair");
 
     log::info!("{:#?}", config);
     log::info!("{:#?}", veth_config);
 
-    let (startup_w, mut startup_r) = oneshot::channel();
-    let (shutdown_w, shutdown_r) = oneshot::channel();
-
     // We'll keep track of ctrl+c events but not let them kill the
     // process immediately as we may need to clean up the veth pair.
-    let ctrl_c_events = setup::ctrl_channel().unwrap();
-
-    // Create the veth pair
-    let veth_handle = thread::spawn(move || {
-        let mut runtime = Runtime::new().unwrap();
-
-        runtime.block_on(setup::run_veth_link(
-            &veth_config_clone,
-            startup_w,
-            shutdown_r,
-        ))
-    });
-
-    // Wait for confirmation that it's set up and configured
-    loop {
-        match startup_r.try_recv() {
-            Ok(_) => break,
-            Err(TryRecvError::Empty) => (),
-            Err(TryRecvError::Closed) => panic!("failed to set up veth pair"),
-        }
-    }
+    let ctrl_c_events = util::ctrl_channel().unwrap();
 
     // Run example in separate thread so that if it panics we can
     // clean up here
     let (example_done_tx, example_done_rx) = crossbeam_channel::bounded(1);
     let handle = thread::spawn(move || {
-        run_example(&config, &veth_config);
+        run_example(&config, &veth_pair);
         let _ = example_done_tx.send(());
     });
 
@@ -784,11 +756,4 @@ fn main() {
             println!("SIGINT received, deleting veth pair and exiting");
         }
     }
-
-    // Delete link
-    if let Err(e) = shutdown_w.send(()) {
-        eprintln!("veth link thread returned unexpectedly: {:?}", e);
-    }
-
-    veth_handle.join().unwrap();
 }
