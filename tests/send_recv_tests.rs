@@ -4,7 +4,7 @@ use rusty_fork::rusty_fork_test;
 use std::thread;
 use std::time::Duration;
 
-use xsk_rs::{socket::SocketConfig, umem::UmemConfig, xsk::Xsk};
+use xsk_rs::{socket::SocketConfig, umem::UmemConfig, xsk::Xsk2};
 
 fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
     let umem_config = UmemConfig::default();
@@ -18,13 +18,13 @@ fn send_recv_test() {
         // Data to send from dev2
         let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
 
-        dev1.send(&pkt).expect("failed to send pkt");
+        let mut recvd_packets = vec![];
         dev2.start_recv();
-
-        // Wait briefly so we don't try to consume too early
         thread::sleep(Duration::from_millis(5));
 
-        let mut recvd_packets = vec![];
+        dev1.send(&pkt).expect("failed to send pkt");
+        thread::sleep(Duration::from_millis(5));
+
         recvd_packets.append(&mut dev2.recv());
         thread::sleep(Duration::from_millis(5000));
 

@@ -3,8 +3,11 @@ use crate::{socket::*, umem::*};
 
 use std::error::Error;
 use std::fmt;
-use std::thread;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use std::{thread, thread::spawn, thread::JoinHandle};
+
+use crossbeam_channel::{bounded, Receiver, Sender};
 
 /// Send Error for Xsk
 #[derive(Debug)]
@@ -21,6 +24,9 @@ impl fmt::Display for XskSendError {
 }
 
 impl Error for XskSendError {}
+
+pub struct SenderStats {}
+pub struct ReceiverStats {}
 
 /// AF_XDP socket
 pub struct Xsk<'a> {
@@ -79,21 +85,131 @@ impl<'a> Xsk<'a> {
             rx_cursor: 0,
         }
     }
+}
 
-    //TODO: This is stupidly slow. maybe try maintaining a free cursor.
-    fn update_tx_frames(&mut self, free_frames: &[u64]) {
-        for free_frame in free_frames {
-            let tx_frame_index = *free_frame as u32 / self.umem_config.frame_size();
-            log::debug!(
-                "update tx_frame, tx_frame_index = {}, free_frame = {}",
-                tx_frame_index,
-                free_frame
-            );
-            self.tx_frames[tx_frame_index as usize].status = FrameStatus::Free;
+/// AF_XDP socket
+pub struct Xsk2<'a> {
+    pub ifname: &'a str,
+    pub umem: Umem<'a>,
+    pub umem_config: UmemConfig,
+    pub socket_config: SocketConfig,
+    shutdown: AtomicBool,
+    tx_handle: JoinHandle<SenderStats>,
+    tx_channel: Sender<Vec<u8>>,
+    rx_handle: JoinHandle<ReceiverStats>,
+    rx_channel: Receiver<Vec<u8>>,
+}
+
+impl<'a> Xsk2<'a> {
+    pub fn new(
+        if_name: &'a str,
+        queue_id: u32,
+        umem_config: UmemConfig,
+        socket_config: SocketConfig,
+        n_tx_frames: usize,
+    ) -> Self {
+        let (mut umem, fill_q, comp_q, frames) = Umem::builder(umem_config.clone())
+            .create_mmap()
+            .expect("failed to create mmap area")
+            .create_umem()
+            .expect("failed to create umem");
+
+        let (tx_q, rx_q) = Socket::new(socket_config.clone(), &mut umem, if_name, queue_id)
+            .expect("failed to build socket");
+
+        let tx_frames = frames[..n_tx_frames].into();
+        let rx_frames = frames[n_tx_frames..].into();
+
+        let tx_channel_capacity = 10_000;
+        let rx_channel_capacity = 10_000;
+
+        let (tx_pkt_send, tx_pkt_recv) = bounded(tx_channel_capacity);
+        let (rx_pkt_send, rx_pkt_recv) = bounded(rx_channel_capacity);
+
+        let mut xsk_tx = XskTx {
+            tx_q,
+            comp_q,
+            tx_frames,
+            pkts_to_send: tx_pkt_recv,
+            outstanding_tx_frames: 0,
+            tx_wait_period: 5,
+            tx_cursor: 0,
+            frame_size: umem_config.frame_size(),
+        };
+
+        let mut xsk_rx = XskRx {
+            rx_q,
+            fill_q,
+            rx_frames,
+            pkts_recvd: rx_pkt_send,
+            outstanding_rx_frames: 0,
+            rx_cursor: 0,
+            poll_ms_timeout: 5,
+        };
+
+        let tx_handle = spawn(move || {
+            xsk_tx.send_loop();
+            xsk_tx.stats()
+        });
+
+        let rx_handle = spawn(move || {
+            xsk_rx.recv_loop();
+            xsk_rx.stats()
+        });
+
+        Self {
+            ifname: if_name,
+            umem,
+            umem_config,
+            socket_config,
+            shutdown: false.into(),
+            tx_handle,
+            tx_channel: tx_pkt_send,
+            rx_handle,
+            rx_channel: rx_pkt_recv,
         }
     }
 
-    pub fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
+    pub fn send(&mut self, data: &[u8]) {
+        self.tx_channel.send(data.into()).expect("failed to send");
+    }
+
+    pub fn recv(&mut self) -> Vec<u8> {
+        self.rx_channel.recv().expect("failed to recv")
+    }
+}
+
+struct XskTx<'a> {
+    tx_q: TxQueue<'a>,
+    comp_q: CompQueue<'a>,
+    tx_frames: Vec<Frame<'a>>,
+    pkts_to_send: Receiver<Vec<u8>>,
+    outstanding_tx_frames: u64,
+    tx_wait_period: u64,
+    tx_cursor: usize,
+    frame_size: u32,
+}
+
+impl<'a> XskTx<'a> {
+    fn stats(&self) -> SenderStats {
+        SenderStats {}
+    }
+
+    fn send_loop(&mut self) {
+        let pkt_iter = self.pkts_to_send.clone().into_iter();
+        for data in pkt_iter {
+            loop {
+                match self.send(&data) {
+                    Ok(_) => break,
+                    Err(e) => match e {
+                        XskSendError::NoFreeTxFrames => thread::sleep(Duration::from_millis(5)),
+                    },
+                }
+            }
+        }
+    }
+
+    fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
         let free_frames = self.comp_q.consume(self.outstanding_tx_frames);
         if free_frames.len() == 0 {
             log::debug!("comp_q.consume() consumed 0 frames");
@@ -129,7 +245,7 @@ impl<'a> Xsk<'a> {
         while unsafe {
             self.tx_q
                 .produce_and_wakeup(&self.tx_frames[self.tx_cursor..self.tx_cursor + 1])
-                .unwrap()
+                .expect("failed to add frames to tx queue")
         } != 1
         {
             // Loop until frames added to the tx ring.
@@ -142,17 +258,56 @@ impl<'a> Xsk<'a> {
         Ok(())
     }
 
-    pub fn start_recv(&mut self) {
-        let frames_filled = unsafe { self.fill_q.produce(&mut self.rx_frames[..]) };
+    //TODO: This is stupidly slow. maybe try maintaining a free cursor.
+    fn update_tx_frames(&mut self, free_frames: &[u64]) {
+        for free_frame in free_frames {
+            let tx_frame_index = *free_frame as u32 / self.frame_size;
+            log::debug!(
+                "update tx_frame, tx_frame_index = {}, free_frame = {}",
+                tx_frame_index,
+                free_frame
+            );
+            self.tx_frames[tx_frame_index as usize].status = FrameStatus::Free;
+        }
+    }
+}
 
+// TODO: recvd packets when dropped should mark the frame desc as free
+struct XskRx<'a> {
+    pub fill_q: FillQueue<'a>,
+    pub rx_q: RxQueue<'a>,
+    pub rx_frames: Vec<Frame<'a>>,
+    pkts_recvd: Sender<Vec<u8>>,
+    outstanding_rx_frames: u64,
+    rx_cursor: usize,
+    poll_ms_timeout: i32,
+}
+
+impl<'a> XskRx<'a> {
+    fn recv_loop(&mut self) {
+        loop {
+            for pkt in self.recv() {
+                self.pkts_recvd
+                    .send(pkt)
+                    .expect("failed to put rcvd pkt on channel");
+            }
+        }
+    }
+
+    fn stats(&self) -> ReceiverStats {
+        ReceiverStats {}
+    }
+
+    fn start_recv(&mut self) {
+        let frames_filled = unsafe { self.fill_q.produce(&mut self.rx_frames[..]) };
         log::debug!("init frames added to fill_q: {}", frames_filled);
     }
 
-    pub fn recv(&mut self) -> Vec<Vec<u8>> {
+    fn recv(&mut self) -> Vec<Vec<u8>> {
         let mut recv_frames = vec![];
         let n_frames_recv = self
             .rx_q
-            .poll_and_consume(&mut self.rx_frames[..], self.tx_wait_period as i32)
+            .poll_and_consume(&mut self.rx_frames[..], self.poll_ms_timeout)
             .unwrap();
 
         if n_frames_recv == 0 {
@@ -161,7 +316,7 @@ impl<'a> Xsk<'a> {
             if self.fill_q.needs_wakeup() {
                 log::debug!("waking up fill_q");
                 self.fill_q
-                    .wakeup(self.rx_q.fd(), self.tx_wait_period as i32)
+                    .wakeup(self.rx_q.fd(), self.poll_ms_timeout)
                     .unwrap();
             }
         } else {
@@ -183,7 +338,7 @@ impl<'a> Xsk<'a> {
                     .produce_and_wakeup(
                         &mut self.rx_frames[..n_frames_recv],
                         self.rx_q.fd(),
-                        self.tx_wait_period as i32,
+                        self.poll_ms_timeout,
                     )
                     .unwrap()
             } != n_frames_recv
@@ -198,12 +353,4 @@ impl<'a> Xsk<'a> {
         }
         recv_frames
     }
-
-    /*
-    pub fn recv_callback<F>(f: F)
-    where
-        F: Fn(&[u8]),
-    {
-    }
-    */
 }
