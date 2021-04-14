@@ -3,7 +3,8 @@ use crate::{socket::*, umem::*};
 
 use std::error::Error;
 use std::fmt;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{thread, thread::spawn, thread::JoinHandle};
 
@@ -93,11 +94,11 @@ pub struct Xsk2<'a> {
     pub umem: Umem<'a>,
     pub umem_config: UmemConfig,
     pub socket_config: SocketConfig,
-    shutdown: AtomicBool,
-    tx_handle: JoinHandle<SenderStats>,
-    tx_channel: Sender<Vec<u8>>,
-    rx_handle: JoinHandle<ReceiverStats>,
-    rx_channel: Receiver<Vec<u8>>,
+    tx_handle: Option<JoinHandle<SenderStats>>,
+    tx_channel: Option<Sender<Vec<u8>>>,
+    rx_handle: Option<JoinHandle<ReceiverStats>>,
+    rx_channel: Option<Receiver<Vec<u8>>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl<'a> Xsk2<'a> {
@@ -126,6 +127,8 @@ impl<'a> Xsk2<'a> {
         let (tx_pkt_send, tx_pkt_recv) = bounded(tx_channel_capacity);
         let (rx_pkt_send, rx_pkt_recv) = bounded(rx_channel_capacity);
 
+        let shutdown = Arc::new(AtomicBool::new(false));
+
         let mut xsk_tx = XskTx {
             tx_q,
             comp_q,
@@ -135,6 +138,7 @@ impl<'a> Xsk2<'a> {
             tx_wait_period: 5,
             tx_cursor: 0,
             frame_size: umem_config.frame_size(),
+            shutdown: shutdown.clone(),
         };
 
         let mut xsk_rx = XskRx {
@@ -145,6 +149,7 @@ impl<'a> Xsk2<'a> {
             outstanding_rx_frames: 0,
             rx_cursor: 0,
             poll_ms_timeout: 5,
+            shutdown: shutdown.clone(),
         };
 
         let tx_handle = spawn(move || {
@@ -153,6 +158,7 @@ impl<'a> Xsk2<'a> {
         });
 
         let rx_handle = spawn(move || {
+            xsk_rx.start_recv();
             xsk_rx.recv_loop();
             xsk_rx.stats()
         });
@@ -162,20 +168,43 @@ impl<'a> Xsk2<'a> {
             umem,
             umem_config,
             socket_config,
-            shutdown: false.into(),
-            tx_handle,
-            tx_channel: tx_pkt_send,
-            rx_handle,
-            rx_channel: rx_pkt_recv,
+            tx_handle: Some(tx_handle),
+            tx_channel: Some(tx_pkt_send),
+            rx_handle: Some(rx_handle),
+            rx_channel: Some(rx_pkt_recv),
+            shutdown,
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(tx_channel) = self.tx_channel.take() {
+            drop(tx_channel);
+        }
+        if let Some(rx_channel) = self.rx_channel.take() {
+            drop(rx_channel);
+        }
+        if let Some(tx_handle) = self.tx_handle.take() {
+            tx_handle.join().expect("failed to join tx_handle");
+        }
+        if let Some(rx_handle) = self.rx_handle.take() {
+            rx_handle.join().expect("failed to join rx_handle");
         }
     }
 
     pub fn send(&mut self, data: &[u8]) {
-        self.tx_channel.send(data.into()).expect("failed to send");
+        if let Some(ref mut tx_channel) = self.tx_channel {
+            tx_channel.send(data.into()).expect("failed to send");
+        }
     }
 
-    pub fn recv(&mut self) -> Vec<u8> {
-        self.rx_channel.recv().expect("failed to recv")
+    pub fn recv(&mut self) -> Option<Vec<u8>> {
+        if let Some(ref rx_channel) = self.rx_channel {
+            let recvd = rx_channel.recv().expect("failed to recv");
+            Some(recvd)
+        } else {
+            None
+        }
     }
 }
 
@@ -188,9 +217,14 @@ struct XskTx<'a> {
     tx_wait_period: u64,
     tx_cursor: usize,
     frame_size: u32,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl<'a> XskTx<'a> {
+    fn shutdown(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
     fn stats(&self) -> SenderStats {
         SenderStats {}
     }
@@ -273,6 +307,7 @@ impl<'a> XskTx<'a> {
 }
 
 // TODO: recvd packets when dropped should mark the frame desc as free
+#[derive(Debug)]
 struct XskRx<'a> {
     pub fill_q: FillQueue<'a>,
     pub rx_q: RxQueue<'a>,
@@ -281,11 +316,19 @@ struct XskRx<'a> {
     outstanding_rx_frames: u64,
     rx_cursor: usize,
     poll_ms_timeout: i32,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl<'a> XskRx<'a> {
+    fn shutdown(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
     fn recv_loop(&mut self) {
         loop {
+            if self.shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             for pkt in self.recv() {
                 self.pkts_recvd
                     .send(pkt)

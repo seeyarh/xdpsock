@@ -14,43 +14,40 @@ fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
 
 #[test]
 fn send_recv_test() {
-    fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
+    fn test_fn(mut dev1: Xsk2, mut dev2: Xsk2) {
         // Data to send from dev2
         let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
 
         let mut recvd_packets = vec![];
-        dev2.start_recv();
         thread::sleep(Duration::from_millis(5));
 
-        dev1.send(&pkt).expect("failed to send pkt");
+        dev1.send(&pkt);
         thread::sleep(Duration::from_millis(5));
 
-        recvd_packets.append(&mut dev2.recv());
-        thread::sleep(Duration::from_millis(5000));
-
-        recvd_packets.append(&mut dev2.recv());
-        thread::sleep(Duration::from_millis(5));
-
-        recvd_packets.append(&mut dev2.recv());
-        thread::sleep(Duration::from_millis(5));
-
-        recvd_packets.append(&mut dev2.recv());
+        for _ in (0..5) {
+            if let Some(recvd) = dev2.recv() {
+                recvd_packets.push(recvd);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
 
         let mut matched = false;
         for recvd_pkt in recvd_packets {
-            eprintln!("{:?}", recvd_pkt);
             if pkt == recvd_pkt {
                 matched = true;
             }
         }
 
         assert!(matched);
+
+        dev1.shutdown();
+        dev2.shutdown();
     }
 
     let (dev1_umem_config, dev1_socket_config) = build_configs();
     let (dev2_umem_config, dev2_socket_config) = build_configs();
 
-    setup::run_test(
+    setup::run_test_2(
         dev1_umem_config,
         dev1_socket_config,
         dev2_umem_config,

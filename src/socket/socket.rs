@@ -54,6 +54,7 @@ impl Error for SocketCreateError {
 ///
 /// More details can be found in the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html)
+#[derive(Debug)]
 pub struct Socket<'umem> {
     inner: Box<xsk_socket>,
     _marker: PhantomData<&'umem ()>,
@@ -75,6 +76,7 @@ unsafe impl Send for TxQueue<'_> {}
 ///
 /// More details can be found in the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#rx-ring).
+#[derive(Debug)]
 pub struct RxQueue<'umem> {
     inner: Box<xsk_ring_cons>,
     fd: Fd,

@@ -1,3 +1,4 @@
+use errno::errno;
 use libbpf_sys::{xsk_ring_cons, xsk_ring_prod, xsk_umem, xsk_umem_config, XDP_PACKET_HEADROOM};
 use std::sync::Arc;
 use std::{convert::TryInto, error::Error, fmt, io, marker::PhantomData, mem::MaybeUninit, ptr};
@@ -251,10 +252,11 @@ unsafe impl Send for XskUmem {}
 
 impl Drop for XskUmem {
     fn drop(&mut self) {
+        log::debug!("deleting umem");
         let err = unsafe { libbpf_sys::xsk_umem__delete(self.0) };
 
         if err != 0 {
-            log::error!("xsk_umem__delete() failed: {}", err);
+            log::error!("xsk_umem__delete() failed: {}", errno());
         }
     }
 }
@@ -415,6 +417,7 @@ impl Umem<'_> {
 ///
 /// For more information see the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#umem-fill-ring)
+#[derive(Debug)]
 pub struct FillQueue<'umem> {
     size: u32,
     inner: Box<xsk_ring_prod>,
