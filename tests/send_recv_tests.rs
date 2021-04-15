@@ -1,8 +1,12 @@
 mod setup;
 
 use rusty_fork::rusty_fork_test;
+use std::collections::HashSet;
+use std::io::Cursor;
 use std::thread;
 use std::time::Duration;
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use xsk_rs::{socket::SocketConfig, umem::UmemConfig, xsk::Xsk2};
 
@@ -15,33 +19,44 @@ fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
 #[test]
 fn send_recv_test() {
     fn test_fn(mut dev1: Xsk2, mut dev2: Xsk2) {
-        // Data to send from dev2
-        let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
+        let pkts_to_send = 100_000;
 
-        let mut recvd_packets = vec![];
-        thread::sleep(Duration::from_millis(5));
+        let tx_send = dev1.tx_sender().unwrap();
+        let rx_recv = dev2.rx_receiver().unwrap();
 
-        dev1.send(&pkt);
-        thread::sleep(Duration::from_millis(5));
-
-        for _ in (0..5) {
-            if let Some(recvd) = dev2.recv() {
-                recvd_packets.push(recvd);
+        let send_handle = thread::spawn(move || {
+            for i in 0..pkts_to_send {
+                let mut pkt = vec![];
+                pkt.write_u64::<LittleEndian>(i).unwrap();
+                eprintln!("sending {}", i);
+                tx_send.send(pkt).unwrap();
             }
-            thread::sleep(Duration::from_millis(50));
-        }
+        });
 
-        let mut matched = false;
-        for recvd_pkt in recvd_packets {
-            if pkt == recvd_pkt {
-                matched = true;
-            }
-        }
+        let recv_handle = thread::spawn(move || rx_recv.iter().collect());
+        thread::sleep(Duration::from_millis(50));
 
-        assert!(matched);
+        thread::sleep(Duration::from_secs(10));
+        send_handle.join().expect("failed to join tx handle");
+        eprintln!("send done");
 
         dev1.shutdown();
         dev2.shutdown();
+        let recvd_pkts: Vec<Vec<u8>> = recv_handle.join().expect("failed to join recv handle");
+
+        let recvd_nums: HashSet<u64> = recvd_pkts
+            .into_iter()
+            .map(|x| {
+                let mut rdr = Cursor::new(x);
+                rdr.read_u64::<LittleEndian>().unwrap()
+            })
+            .collect();
+
+        let expected_recvd_nums: Vec<u64> = (0..pkts_to_send).into_iter().collect();
+
+        for n in expected_recvd_nums.iter() {
+            assert!(recvd_nums.contains(n));
+        }
     }
 
     let (dev1_umem_config, dev1_socket_config) = build_configs();

@@ -277,6 +277,7 @@ impl TxQueue<'_> {
         let mut idx: u32 = 0;
 
         let cnt = libbpf_sys::_xsk_ring_prod__reserve(self.inner.as_mut(), nb, &mut idx);
+        log::debug!("tx: _xsk_ring_prod__reserve = {}", cnt);
 
         if cnt > 0 {
             for desc in descs.iter().take(cnt.try_into().unwrap()) {

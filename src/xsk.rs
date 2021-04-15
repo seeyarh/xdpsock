@@ -1,6 +1,7 @@
 //! AF_XDP socket
 use crate::{socket::*, umem::*};
 
+use log::debug;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,7 +44,7 @@ pub struct Xsk<'a> {
     pub socket_config: SocketConfig,
     outstanding_tx_frames: u64,
     outstanding_rx_frames: u64,
-    tx_wait_period: u64,
+    tx_poll_ms_timeout: i32,
     tx_cursor: usize,
     rx_cursor: usize,
 }
@@ -81,7 +82,7 @@ impl<'a> Xsk<'a> {
             socket_config,
             outstanding_tx_frames: 0,
             outstanding_rx_frames: 0,
-            tx_wait_period: 10,
+            tx_poll_ms_timeout: 10,
             tx_cursor: 0,
             rx_cursor: 0,
         }
@@ -121,7 +122,7 @@ impl<'a> Xsk2<'a> {
         let tx_frames = frames[..n_tx_frames].into();
         let rx_frames = frames[n_tx_frames..].into();
 
-        let tx_channel_capacity = 10_000;
+        let tx_channel_capacity = 1;
         let rx_channel_capacity = 10_000;
 
         let (tx_pkt_send, tx_pkt_recv) = bounded(tx_channel_capacity);
@@ -135,11 +136,12 @@ impl<'a> Xsk2<'a> {
             tx_frames,
             pkts_to_send: tx_pkt_recv,
             outstanding_tx_frames: 0,
-            tx_wait_period: 5,
+            tx_poll_ms_timeout: 5,
             tx_cursor: 0,
             frame_size: umem_config.frame_size(),
             shutdown: shutdown.clone(),
         };
+        debug!("xsk_tx len frames = {}", xsk_tx.tx_frames.len());
 
         let mut xsk_rx = XskRx {
             rx_q,
@@ -198,6 +200,22 @@ impl<'a> Xsk2<'a> {
         }
     }
 
+    pub fn tx_sender(&self) -> Option<Sender<Vec<u8>>> {
+        if let Some(ref tx_channel) = self.tx_channel {
+            Some(tx_channel.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn rx_receiver(&self) -> Option<Receiver<Vec<u8>>> {
+        if let Some(ref rx_channel) = self.rx_channel {
+            Some(rx_channel.clone())
+        } else {
+            None
+        }
+    }
+
     pub fn recv(&mut self) -> Option<Vec<u8>> {
         if let Some(ref rx_channel) = self.rx_channel {
             let recvd = rx_channel.recv().expect("failed to recv");
@@ -214,7 +232,7 @@ struct XskTx<'a> {
     tx_frames: Vec<Frame<'a>>,
     pkts_to_send: Receiver<Vec<u8>>,
     outstanding_tx_frames: u64,
-    tx_wait_period: u64,
+    tx_poll_ms_timeout: i32,
     tx_cursor: usize,
     frame_size: u32,
     shutdown: Arc<AtomicBool>,
@@ -233,10 +251,15 @@ impl<'a> XskTx<'a> {
         let pkt_iter = self.pkts_to_send.clone().into_iter();
         for data in pkt_iter {
             loop {
+                log::debug!("tx: sending {:?}", data);
+                log::debug!("tx: channel len = {}", self.pkts_to_send.len());
                 match self.send(&data) {
                     Ok(_) => break,
                     Err(e) => match e {
-                        XskSendError::NoFreeTxFrames => thread::sleep(Duration::from_millis(5)),
+                        XskSendError::NoFreeTxFrames => {
+                            log::debug!("tx: No tx frames");
+                            thread::sleep(Duration::from_millis(5));
+                        }
                     },
                 }
             }
@@ -244,12 +267,17 @@ impl<'a> XskTx<'a> {
     }
 
     fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
+        log::debug!("tx: comp_q consume");
         let free_frames = self.comp_q.consume(self.outstanding_tx_frames);
+        self.outstanding_tx_frames -= free_frames.len() as u64;
+        log::debug!("tx: comp_q consume done");
+
         if free_frames.len() == 0 {
             log::debug!("comp_q.consume() consumed 0 frames");
             if self.tx_q.needs_wakeup() {
-                log::debug!("waking up dev2.tx_q");
+                log::debug!("tx: waking up tx_q");
                 self.tx_q.wakeup().expect("failed to wake up tx queue");
+                log::debug!("tx: woke up tx_q");
             }
         }
         log::debug!(
@@ -269,11 +297,15 @@ impl<'a> XskTx<'a> {
                 .expect("failed to write to umem");
         }
 
+        /*
         // Wait until we're ok to write
-        while !poll_write(self.tx_q.fd(), self.tx_wait_period as i32).unwrap() {
-            log::debug!("poll_write(dev2.tx_q) returned false");
+        log::debug!("tx: poll write tx q");
+        while !poll_write(self.tx_q.fd(), self.tx_poll_ms_timeout).unwrap() {
+            log::debug!("tx: poll_write(dev2.tx_q) returned false");
             continue;
         }
+        log::debug!("tx: done polling");
+        */
 
         // Add consumed frames back to the tx queue
         while unsafe {
@@ -287,6 +319,7 @@ impl<'a> XskTx<'a> {
         }
         log::debug!("tx_q.produce_and_wakeup() submitted {} frames", 1);
 
+        self.outstanding_tx_frames += 1;
         self.tx_frames[self.tx_cursor].status = FrameStatus::OnTxQueue;
         self.tx_cursor = (self.tx_cursor + 1) % self.tx_frames.len();
         Ok(())

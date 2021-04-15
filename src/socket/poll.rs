@@ -32,5 +32,6 @@ pub fn poll_read(fd: &mut Fd, timeout_ms: i32) -> io::Result<bool> {
 /// Check if the socket is available to write.
 #[inline]
 pub fn poll_write(fd: &mut Fd, timeout_ms: i32) -> io::Result<bool> {
+    log::debug!("tx: poll_write, timeout = {}", timeout_ms);
     poll(fd.pollout_fd(), timeout_ms)
 }
