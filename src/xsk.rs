@@ -10,6 +10,9 @@ use std::time::Duration;
 use std::{thread, thread::spawn, thread::JoinHandle};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
+use etherparse::{
+    Ethernet2Header, IpHeader, PacketHeaders, ReadError, TransportHeader, VlanHeader,
+};
 
 /// Send Error for Xsk
 #[derive(Debug)]
@@ -42,11 +45,6 @@ pub struct Xsk<'a> {
     pub umem: Umem<'a>,
     pub umem_config: UmemConfig,
     pub socket_config: SocketConfig,
-    outstanding_tx_frames: u64,
-    outstanding_rx_frames: u64,
-    tx_poll_ms_timeout: i32,
-    tx_cursor: usize,
-    rx_cursor: usize,
 }
 
 impl<'a> Xsk<'a> {
@@ -80,11 +78,44 @@ impl<'a> Xsk<'a> {
             umem,
             umem_config,
             socket_config,
-            outstanding_tx_frames: 0,
-            outstanding_rx_frames: 0,
-            tx_poll_ms_timeout: 10,
-            tx_cursor: 0,
-            rx_cursor: 0,
+        }
+    }
+}
+
+const MAX_PAYLOAD_SIZE: usize = 1500;
+
+#[derive(Debug)]
+pub struct ParsedPacket {
+    pub link: Option<Ethernet2Header>,
+    pub vlan: Option<VlanHeader>,
+    pub ip: Option<IpHeader>,
+    pub transport: Option<TransportHeader>,
+    pub payload: Option<[u8; MAX_PAYLOAD_SIZE]>,
+}
+
+impl ParsedPacket {
+    fn from_headers_with_payload(headers: PacketHeaders) -> Self {
+        let mut payload: [u8; MAX_PAYLOAD_SIZE] = [0; MAX_PAYLOAD_SIZE];
+        let l = std::cmp::min(MAX_PAYLOAD_SIZE, headers.payload.len());
+        let payload_slice = &mut payload[..l];
+        payload_slice.copy_from_slice(&headers.payload[..l]);
+
+        Self {
+            link: headers.link,
+            vlan: headers.vlan,
+            ip: headers.ip,
+            transport: headers.transport,
+            payload: Some(payload),
+        }
+    }
+
+    fn from_headers_without_payload(headers: PacketHeaders) -> Self {
+        Self {
+            link: headers.link,
+            vlan: headers.vlan,
+            ip: headers.ip,
+            transport: headers.transport,
+            payload: None,
         }
     }
 }
@@ -98,7 +129,7 @@ pub struct Xsk2<'a> {
     tx_handle: Option<JoinHandle<SenderStats>>,
     tx_channel: Option<Sender<Vec<u8>>>,
     rx_handle: Option<JoinHandle<ReceiverStats>>,
-    rx_channel: Option<Receiver<Vec<u8>>>,
+    rx_channel: Option<Receiver<Result<ParsedPacket, ReadError>>>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -123,7 +154,7 @@ impl<'a> Xsk2<'a> {
         let rx_frames = frames[n_tx_frames..].into();
 
         let tx_channel_capacity = 1;
-        let rx_channel_capacity = 10_000;
+        let rx_channel_capacity = 100_000;
 
         let (tx_pkt_send, tx_pkt_recv) = bounded(tx_channel_capacity);
         let (rx_pkt_send, rx_pkt_recv) = bounded(rx_channel_capacity);
@@ -136,12 +167,11 @@ impl<'a> Xsk2<'a> {
             tx_frames,
             pkts_to_send: tx_pkt_recv,
             outstanding_tx_frames: 0,
-            tx_poll_ms_timeout: 5,
+            tx_poll_ms_timeout: 1,
             tx_cursor: 0,
             frame_size: umem_config.frame_size(),
             shutdown: shutdown.clone(),
         };
-        debug!("xsk_tx len frames = {}", xsk_tx.tx_frames.len());
 
         let mut xsk_rx = XskRx {
             rx_q,
@@ -150,8 +180,9 @@ impl<'a> Xsk2<'a> {
             pkts_recvd: rx_pkt_send,
             outstanding_rx_frames: 0,
             rx_cursor: 0,
-            poll_ms_timeout: 5,
+            poll_ms_timeout: 1,
             shutdown: shutdown.clone(),
+            include_payload: true,
         };
 
         let tx_handle = spawn(move || {
@@ -208,7 +239,7 @@ impl<'a> Xsk2<'a> {
         }
     }
 
-    pub fn rx_receiver(&self) -> Option<Receiver<Vec<u8>>> {
+    pub fn rx_receiver(&self) -> Option<Receiver<Result<ParsedPacket, ReadError>>> {
         if let Some(ref rx_channel) = self.rx_channel {
             Some(rx_channel.clone())
         } else {
@@ -216,7 +247,7 @@ impl<'a> Xsk2<'a> {
         }
     }
 
-    pub fn recv(&mut self) -> Option<Vec<u8>> {
+    pub fn recv(&mut self) -> Option<Result<ParsedPacket, ReadError>> {
         if let Some(ref rx_channel) = self.rx_channel {
             let recvd = rx_channel.recv().expect("failed to recv");
             Some(recvd)
@@ -345,29 +376,17 @@ struct XskRx<'a> {
     pub fill_q: FillQueue<'a>,
     pub rx_q: RxQueue<'a>,
     pub rx_frames: Vec<Frame<'a>>,
-    pkts_recvd: Sender<Vec<u8>>,
+    pkts_recvd: Sender<Result<ParsedPacket, ReadError>>,
     outstanding_rx_frames: u64,
     rx_cursor: usize,
     poll_ms_timeout: i32,
     shutdown: Arc<AtomicBool>,
+    include_payload: bool,
 }
 
 impl<'a> XskRx<'a> {
     fn shutdown(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
-    }
-
-    fn recv_loop(&mut self) {
-        loop {
-            if self.shutdown.load(Ordering::Relaxed) {
-                break;
-            }
-            for pkt in self.recv() {
-                self.pkts_recvd
-                    .send(pkt)
-                    .expect("failed to put rcvd pkt on channel");
-            }
-        }
     }
 
     fn stats(&self) -> ReceiverStats {
@@ -376,57 +395,91 @@ impl<'a> XskRx<'a> {
 
     fn start_recv(&mut self) {
         let frames_filled = unsafe { self.fill_q.produce(&mut self.rx_frames[..]) };
-        log::debug!("init frames added to fill_q: {}", frames_filled);
+        log::debug!("rx: init frames added to fill_q: {}", frames_filled);
     }
 
-    fn recv(&mut self) -> Vec<Vec<u8>> {
-        let mut recv_frames = vec![];
-        let n_frames_recv = self
-            .rx_q
-            .poll_and_consume(&mut self.rx_frames[..], self.poll_ms_timeout)
-            .unwrap();
+    fn recv_loop(&mut self) {
+        while !self.shutdown.load(Ordering::Relaxed) {
+            let n_frames_recv = self
+                .rx_q
+                .poll_and_consume(&mut self.rx_frames[..], self.poll_ms_timeout)
+                .unwrap();
 
-        if n_frames_recv == 0 {
-            // No frames consumed, wake up fill queue if required
-            log::debug!("rx_q.poll_and_consume() consumed 0 frames");
-            if self.fill_q.needs_wakeup() {
-                log::debug!("waking up fill_q");
-                self.fill_q
-                    .wakeup(self.rx_q.fd(), self.poll_ms_timeout)
-                    .unwrap();
+            if n_frames_recv == 0 {
+                // No frames consumed, wake up fill queue if required
+                log::debug!("rx: rx_q.poll_and_consume() consumed 0 frames");
+                if self.fill_q.needs_wakeup() {
+                    log::debug!("waking up fill_q");
+                    self.fill_q
+                        .wakeup(self.rx_q.fd(), self.poll_ms_timeout)
+                        .unwrap();
+                }
+            } else {
+                log::debug!(
+                    "rx: rx_q.poll_and_consume() consumed {} frames",
+                    &n_frames_recv
+                );
+
+                for frame in self.rx_frames.iter().take(n_frames_recv) {
+                    let data = unsafe {
+                        frame
+                            .read_from_umem_checked(frame.len())
+                            .expect("rx: failed to read from umem")
+                    };
+
+                    match PacketHeaders::from_ethernet_slice(data) {
+                        Err(e) => {
+                            log::debug!("rx: failed to parse pkt {:?}", data);
+                            match self.pkts_recvd.send(Err(e)) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    log::error!(
+                                        "failed to put parse error on rx channel {:?}",
+                                        e.into_inner()
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        Ok(packet) => {
+                            let parsed = if self.include_payload {
+                                ParsedPacket::from_headers_with_payload(packet)
+                            } else {
+                                ParsedPacket::from_headers_without_payload(packet)
+                            };
+                            match self.pkts_recvd.send(Ok(parsed)) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    log::error!(
+                                        "failed to put parsed pkt on rx channel: {:?}",
+                                        e.into_inner()
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add frames back to fill queue
+                while unsafe {
+                    self.fill_q
+                        .produce_and_wakeup(
+                            &mut self.rx_frames[..n_frames_recv],
+                            self.rx_q.fd(),
+                            self.poll_ms_timeout,
+                        )
+                        .unwrap()
+                } != n_frames_recv
+                {
+                    // Loop until frames added to the fill ring.
+                    log::debug!("rx: fill_q.produce_and_wakeup() failed to allocate");
+                }
+                log::debug!(
+                    "rx: fill_q.produce_and_wakeup() submitted {} frames",
+                    n_frames_recv
+                );
             }
-        } else {
-            log::debug!("rx_q.poll_and_consume() consumed {} frames", &n_frames_recv);
-
-            for frame in self.rx_frames.iter().take(n_frames_recv) {
-                let data = unsafe {
-                    frame
-                        .read_from_umem_checked(frame.len())
-                        .expect("failed to read from umem")
-                };
-
-                recv_frames.push(data.into());
-            }
-
-            // Add frames back to fill queue
-            while unsafe {
-                self.fill_q
-                    .produce_and_wakeup(
-                        &mut self.rx_frames[..n_frames_recv],
-                        self.rx_q.fd(),
-                        self.poll_ms_timeout,
-                    )
-                    .unwrap()
-            } != n_frames_recv
-            {
-                // Loop until frames added to the fill ring.
-                log::debug!("fill_q.produce_and_wakeup() failed to allocate");
-            }
-            log::debug!(
-                "fill_q.produce_and_wakeup() submitted {} frames",
-                n_frames_recv
-            );
         }
-        recv_frames
     }
 }
