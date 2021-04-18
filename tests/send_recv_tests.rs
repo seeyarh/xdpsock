@@ -100,12 +100,13 @@ fn send_recv_test() {
             eprintln!("send time is: {:?}", duration);
         });
 
-        thread::sleep(Duration::from_secs(1));
         send_handle.join().expect("failed to join tx handle");
-        eprintln!("send done");
+        dev1.shutdown_tx();
+        dev1.shutdown_rx();
+        thread::sleep(Duration::from_secs(1));
+        dev2.shutdown_tx();
+        dev2.shutdown_rx();
 
-        dev1.shutdown();
-        dev2.shutdown();
         let recvd_nums = recv_handle.join().expect("failed to join recv handle");
 
         let expected_recvd_nums: Vec<u64> = (0..pkts_to_send).into_iter().collect();
