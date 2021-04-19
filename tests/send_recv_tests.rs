@@ -12,14 +12,25 @@ use etherparse::{
 };
 
 use xsk_rs::{
-    socket::SocketConfig,
-    umem::UmemConfig,
+    socket::{SocketConfig, SocketConfigBuilder},
+    umem::{UmemConfig, UmemConfigBuilder},
     xsk::{ParsedPacket, Xsk2},
 };
 
 fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
-    let umem_config = UmemConfig::default();
-    let socket_config = SocketConfig::default();
+    let umem_config = UmemConfigBuilder::new()
+        .frame_count(8192)
+        .comp_queue_size(4096)
+        .fill_queue_size(4096)
+        .build()
+        .unwrap();
+
+    let socket_config = SocketConfigBuilder::new()
+        .tx_queue_size(4096)
+        .rx_queue_size(4096)
+        .build()
+        .unwrap();
+
     (Some(umem_config), Some(socket_config))
 }
 
@@ -82,6 +93,7 @@ fn send_recv_test() {
             recvd_nums
         });
 
+        // give the receiver a chance to get going
         thread::sleep(Duration::from_millis(50));
 
         let send_handle = thread::spawn(move || {
@@ -92,20 +104,35 @@ fn send_recv_test() {
                     .udp(SRC_PORT, DST_PORT);
                 let pkt_with_payload = generate_pkt(pkt_builder, i);
                 tx_send.send(pkt_with_payload).unwrap();
-                if i % 1000 == 0 {
-                    thread::sleep(Duration::from_micros(1));
-                }
             }
             let duration = start.elapsed();
             eprintln!("send time is: {:?}", duration);
         });
 
         send_handle.join().expect("failed to join tx handle");
-        dev1.shutdown_tx();
-        dev1.shutdown_rx();
-        thread::sleep(Duration::from_secs(1));
-        dev2.shutdown_tx();
-        dev2.shutdown_rx();
+
+        let dev1_tx_stats = dev1.shutdown_tx().expect("failed to shutdown tx");
+        eprintln!("dev1 tx_stats = {:?}", dev1_tx_stats);
+
+        let tx_start = dev1_tx_stats.start_time;
+        let tx_end = dev1_tx_stats.end_time.expect("tx end time not set");
+        eprintln!("dev1 tx duration = {:?}", tx_end.duration_since(tx_start));
+
+        let dev1_rx_stats = dev1.shutdown_rx().expect("failed to shut down rx");
+        eprintln!("dev1 rx_stats = {:?}", dev1_rx_stats);
+
+        let dev2_tx_stats = dev2.shutdown_tx().expect("failed to shut down tx");
+        eprintln!("dev2 tx_stats = {:?}", dev2_tx_stats);
+        let dev2_rx_stats = dev2.shutdown_rx().expect("failed to shut down rx");
+        eprintln!("dev2 rx_stats = {:?}", dev2_rx_stats);
+        let rx_start = dev2_rx_stats.start_time;
+        let rx_end = dev2_rx_stats.end_time.expect("rx end time not set");
+        eprintln!("dev2 rx duration = {:?}", rx_end.duration_since(rx_start));
+
+        assert_eq!(dev1_tx_stats.pkts_tx, pkts_to_send);
+
+        // we can receive extra packets due to random traffic
+        assert!(dev2_rx_stats.pkts_rx >= pkts_to_send);
 
         let recvd_nums = recv_handle.join().expect("failed to join recv handle");
 

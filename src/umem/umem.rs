@@ -529,6 +529,7 @@ unsafe impl Send for FillQueue<'_> {}
 ///
 /// For more information see the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#umem-completion-ring)
+#[derive(Debug)]
 pub struct CompQueue<'umem> {
     size: u32,
     inner: Box<xsk_ring_cons>,

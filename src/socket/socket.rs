@@ -64,6 +64,7 @@ pub struct Socket<'umem> {
 ///
 /// More details can be found in the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#tx-ring).
+#[derive(Debug)]
 pub struct TxQueue<'umem> {
     inner: Box<xsk_ring_prod>,
     fd: Fd,

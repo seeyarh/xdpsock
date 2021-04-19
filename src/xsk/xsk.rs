@@ -112,6 +112,7 @@ impl<'a> Xsk2<'a> {
             tx_poll_ms_timeout: 1,
             tx_cursor: 0,
             frame_size: umem_config.frame_size(),
+            stats: TxStats::new(),
         };
 
         let mut xsk_rx = XskRx {
@@ -124,6 +125,7 @@ impl<'a> Xsk2<'a> {
             poll_ms_timeout: 1,
             shutdown: shutdown.clone(),
             include_payload: true,
+            stats: RxStats::new(),
         };
 
         let core_ids_tx = core_affinity::get_core_ids().expect("failed to get cpu core ids");
@@ -135,7 +137,7 @@ impl<'a> Xsk2<'a> {
                 core_affinity::set_for_current(core_ids_tx[0]);
             }
             xsk_tx.send_loop();
-            xsk_tx.stats()
+            xsk_tx.stats
         });
 
         let rx_handle = thread::spawn(move || {
@@ -145,7 +147,7 @@ impl<'a> Xsk2<'a> {
             }
 
             xsk_rx.start_recv();
-            xsk_rx.stats()
+            xsk_rx.stats
         });
 
         Self {
@@ -161,23 +163,27 @@ impl<'a> Xsk2<'a> {
         }
     }
 
-    pub fn shutdown_rx(&mut self) {
+    pub fn shutdown_rx(&mut self) -> Option<RxStats> {
         self.shutdown.store(true, Ordering::Relaxed);
         if let Some(rx_channel) = self.rx_channel.take() {
             drop(rx_channel);
         }
         if let Some(rx_handle) = self.rx_handle.take() {
-            rx_handle.join().expect("failed to join rx_handle");
+            let stats = rx_handle.join().expect("failed to join rx_handle");
+            return Some(stats);
         }
+        None
     }
 
-    pub fn shutdown_tx(&mut self) {
+    pub fn shutdown_tx(&mut self) -> Option<TxStats> {
         if let Some(tx_channel) = self.tx_channel.take() {
             drop(tx_channel);
         }
         if let Some(tx_handle) = self.tx_handle.take() {
-            tx_handle.join().expect("failed to join tx_handle");
+            let stats = tx_handle.join().expect("failed to join tx_handle");
+            return Some(stats);
         }
+        None
     }
 
     pub fn send(&mut self, data: &[u8]) {

@@ -9,11 +9,28 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 
-pub struct TxStats {}
+#[derive(Debug)]
+pub struct TxStats {
+    pub pkts_tx: u64,
+    pub start_time: Instant,
+    pub end_time: Option<Instant>,
+}
+
+impl TxStats {
+    pub fn new() -> Self {
+        Self {
+            pkts_tx: 0,
+            start_time: Instant::now(),
+            end_time: None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct TxConfig {}
 
 /// Send Error for Xsk
@@ -32,6 +49,7 @@ impl fmt::Display for XskSendError {
 
 impl Error for XskSendError {}
 
+#[derive(Debug)]
 pub struct XskTx<'a> {
     pub tx_q: TxQueue<'a>,
     pub comp_q: CompQueue<'a>,
@@ -41,19 +59,19 @@ pub struct XskTx<'a> {
     pub tx_poll_ms_timeout: i32,
     pub tx_cursor: usize,
     pub frame_size: u32,
+    pub stats: TxStats,
 }
 
 impl<'a> XskTx<'a> {
-    pub fn stats(&self) -> TxStats {
-        TxStats {}
-    }
-
     pub fn send_loop(&mut self) {
         let pkt_iter = self.pkts_to_send.clone().into_iter();
         for data in pkt_iter {
             loop {
                 match self.send(&data) {
-                    Ok(_) => break,
+                    Ok(_) => {
+                        self.stats.pkts_tx += 1;
+                        break;
+                    }
                     Err(e) => match e {
                         XskSendError::NoFreeTxFrames => {
                             log::debug!("tx: No tx frames");
@@ -63,6 +81,8 @@ impl<'a> XskTx<'a> {
                 }
             }
         }
+        log::debug!("tx: send loop complete");
+        self.stats.end_time = Some(Instant::now());
     }
 
     fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
