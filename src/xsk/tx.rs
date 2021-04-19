@@ -17,7 +17,7 @@ use crossbeam_channel::Receiver;
 pub struct TxStats {
     pub pkts_tx: u64,
     pub start_time: Instant,
-    pub end_time: Option<Instant>,
+    pub end_time: Instant,
 }
 
 impl TxStats {
@@ -25,8 +25,16 @@ impl TxStats {
         Self {
             pkts_tx: 0,
             start_time: Instant::now(),
-            end_time: None,
+            end_time: Instant::now(),
         }
+    }
+
+    pub fn duration(&self) -> Duration {
+        self.end_time.duration_since(self.start_time)
+    }
+
+    pub fn pps(&self) -> f64 {
+        self.pkts_tx as f64 / (self.duration().as_secs()) as f64
     }
 }
 
@@ -60,13 +68,36 @@ pub struct XskTx<'a> {
     pub tx_cursor: usize,
     pub frame_size: u32,
     pub stats: TxStats,
+    pub target_pps: u64,
+    pub pps_threshold: u64,
 }
 
 impl<'a> XskTx<'a> {
+    fn rate_limit(&self) {
+        if self.target_pps > 0 {
+            let elapsed = self.stats.start_time.elapsed();
+            if elapsed.as_secs() > 0 {
+                let cur_pps = (self.stats.pkts_tx / elapsed.as_secs()) as i64;
+                if (cur_pps - self.target_pps as i64) as u64 > self.pps_threshold {
+                    let time_to_sleep = self.sleep_time();
+                    log::debug!("tx: current pps = {}", cur_pps);
+                    log::debug!("tx: sleeping for {:?}", time_to_sleep);
+                    thread::sleep(time_to_sleep);
+                }
+            }
+        }
+    }
+
+    fn sleep_time(&self) -> Duration {
+        let pkt_per_microsecond = (self.target_pps as f64) / 1_000_000.0;
+        Duration::from_micros((1.0 / pkt_per_microsecond) as u64)
+    }
+
     pub fn send_loop(&mut self) {
         let pkt_iter = self.pkts_to_send.clone().into_iter();
         for data in pkt_iter {
             loop {
+                self.rate_limit();
                 match self.send(&data) {
                     Ok(_) => {
                         self.stats.pkts_tx += 1;
@@ -82,9 +113,10 @@ impl<'a> XskTx<'a> {
             }
         }
         log::debug!("tx: send loop complete");
-        self.stats.end_time = Some(Instant::now());
+        self.stats.end_time = Instant::now();
     }
 
+    // TODO: Batch send implementation, rate limiting
     fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
         let free_frames = self.comp_q.consume(self.outstanding_tx_frames);
         self.outstanding_tx_frames -= free_frames.len() as u64;

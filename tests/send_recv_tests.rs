@@ -113,21 +113,19 @@ fn send_recv_test() {
 
         let dev1_tx_stats = dev1.shutdown_tx().expect("failed to shutdown tx");
         eprintln!("dev1 tx_stats = {:?}", dev1_tx_stats);
-
-        let tx_start = dev1_tx_stats.start_time;
-        let tx_end = dev1_tx_stats.end_time.expect("tx end time not set");
-        eprintln!("dev1 tx duration = {:?}", tx_end.duration_since(tx_start));
+        eprintln!("dev1 tx duration = {:?}", dev1_tx_stats.duration());
+        eprintln!("dev1 tx pps = {:?}", dev1_tx_stats.pps());
 
         let dev1_rx_stats = dev1.shutdown_rx().expect("failed to shut down rx");
         eprintln!("dev1 rx_stats = {:?}", dev1_rx_stats);
 
         let dev2_tx_stats = dev2.shutdown_tx().expect("failed to shut down tx");
         eprintln!("dev2 tx_stats = {:?}", dev2_tx_stats);
+
         let dev2_rx_stats = dev2.shutdown_rx().expect("failed to shut down rx");
         eprintln!("dev2 rx_stats = {:?}", dev2_rx_stats);
-        let rx_start = dev2_rx_stats.start_time;
-        let rx_end = dev2_rx_stats.end_time.expect("rx end time not set");
-        eprintln!("dev2 rx duration = {:?}", rx_end.duration_since(rx_start));
+        eprintln!("dev2 rx duration = {:?}", dev2_rx_stats.duration());
+        eprintln!("dev2 rx pps = {:?}", dev2_rx_stats.pps());
 
         assert_eq!(dev1_tx_stats.pkts_tx, pkts_to_send);
 

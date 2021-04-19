@@ -113,6 +113,8 @@ impl<'a> Xsk2<'a> {
             tx_cursor: 0,
             frame_size: umem_config.frame_size(),
             stats: TxStats::new(),
+            target_pps: 0,
+            pps_threshold: 5_000,
         };
 
         let mut xsk_rx = XskRx {

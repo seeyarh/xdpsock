@@ -18,7 +18,7 @@ pub struct RxStats {
     pub pkts_rx: u64,
     pub pkts_rx_parse_fail: u64,
     pub start_time: Instant,
-    pub end_time: Option<Instant>,
+    pub end_time: Instant,
 }
 
 impl RxStats {
@@ -27,8 +27,15 @@ impl RxStats {
             pkts_rx: 0,
             pkts_rx_parse_fail: 0,
             start_time: Instant::now(),
-            end_time: None,
+            end_time: Instant::now(),
         }
+    }
+    pub fn duration(&self) -> Duration {
+        self.end_time.duration_since(self.start_time)
+    }
+
+    pub fn pps(&self) -> f64 {
+        self.pkts_rx as f64 / (self.duration().as_secs()) as f64
     }
 }
 
@@ -103,9 +110,11 @@ impl<'a> XskRx<'a> {
         log::debug!("rx: init frames added to fill_q: {}", frames_filled);
 
         self.recv_loop();
-        self.stats.end_time = Some(Instant::now());
+        self.stats.end_time = Instant::now();
     }
 
+    // TODO: Do we need an RX cursor? Will the addresses received in poll and consume always be in
+    // the correct order?
     fn recv_loop(&mut self) {
         while !self.shutdown.load(Ordering::Relaxed) {
             // check for rx packets
@@ -178,6 +187,6 @@ impl<'a> XskRx<'a> {
             }
         }
 
-        self.stats.end_time = Some(Instant::now());
+        self.stats.end_time = Instant::now();
     }
 }
