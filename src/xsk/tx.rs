@@ -68,6 +68,7 @@ pub struct XskTx<'a> {
     pub tx_cursor: usize,
     pub frame_size: u32,
     pub stats: TxStats,
+    pub batch_size: usize,
     pub target_pps: u64,
     pub pps_threshold: u64,
 }
@@ -106,8 +107,8 @@ impl<'a> XskTx<'a> {
         self.stats.end_time = Instant::now();
     }
 
-    // TODO: Batch send implementation, rate limiting
     fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
+        log::debug!("tx: tx_cursor = {}", self.tx_cursor);
         let free_frames = self.comp_q.consume(self.outstanding_tx_frames);
         self.outstanding_tx_frames -= free_frames.len() as u64;
 
@@ -137,16 +138,22 @@ impl<'a> XskTx<'a> {
         }
 
         // Add consumed frames back to the tx queue
-        while unsafe {
-            self.tx_q
-                .produce_and_wakeup(&self.tx_frames[self.tx_cursor..self.tx_cursor + 1])
-                .expect("failed to add frames to tx queue")
-        } != 1
-        {
-            // Loop until frames added to the tx ring.
-            log::debug!("tx_q.produce_and_wakeup() failed to allocate");
+        if ((self.tx_cursor + 1) % self.batch_size) == 0 {
+            let start = self.tx_cursor + 1 - self.batch_size;
+            let end = self.tx_cursor + 1;
+            log::debug!("tx: adding tx_frames[{}..{}] to tx queue", start, end);
+
+            while unsafe {
+                self.tx_q
+                    .produce_and_wakeup(&self.tx_frames[start..end])
+                    .expect("failed to add frames to tx queue")
+            } != self.batch_size
+            {
+                // Loop until frames added to the tx ring.
+                log::debug!("tx_q.produce_and_wakeup() failed to allocate");
+            }
+            log::debug!("tx_q.produce_and_wakeup() submitted {} frames", 1);
         }
-        log::debug!("tx_q.produce_and_wakeup() submitted {} frames", 1);
 
         self.outstanding_tx_frames += 1;
         self.tx_frames[self.tx_cursor].status = FrameStatus::OnTxQueue;
@@ -154,7 +161,6 @@ impl<'a> XskTx<'a> {
         Ok(())
     }
 
-    //TODO: This is stupidly slow. maybe try maintaining a free cursor.
     fn update_tx_frames(&mut self, free_frames: &[u64]) {
         for free_frame in free_frames {
             let tx_frame_index = *free_frame as u32 / self.frame_size;

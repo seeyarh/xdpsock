@@ -103,6 +103,7 @@ impl<'a> Xsk2<'a> {
 
         let shutdown = Arc::new(AtomicBool::new(false));
 
+        // TODO: Create new function that enforces tx_frames.len() is multiple of batch size
         let mut xsk_tx = XskTx {
             tx_q,
             comp_q,
@@ -113,8 +114,10 @@ impl<'a> Xsk2<'a> {
             tx_cursor: 0,
             frame_size: umem_config.frame_size(),
             stats: TxStats::new(),
-            target_pps: 100_000,
+            //target_pps: 100_000,
+            target_pps: 0,
             pps_threshold: 5_000,
+            batch_size: 1,
         };
 
         let mut xsk_rx = XskRx {
