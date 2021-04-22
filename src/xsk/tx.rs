@@ -74,23 +74,13 @@ pub struct XskTx<'a> {
 
 impl<'a> XskTx<'a> {
     fn rate_limit(&self) {
-        if self.target_pps > 0 {
-            let elapsed = self.stats.start_time.elapsed();
-            if elapsed.as_secs() > 0 {
-                let cur_pps = (self.stats.pkts_tx / elapsed.as_secs()) as i64;
-                if (cur_pps - self.target_pps as i64) as u64 > self.pps_threshold {
-                    let time_to_sleep = self.sleep_time();
-                    log::debug!("tx: current pps = {}", cur_pps);
-                    log::debug!("tx: sleeping for {:?}", time_to_sleep);
-                    thread::sleep(time_to_sleep);
-                }
-            }
+        if self.target_pps == 0 {
+            return;
         }
-    }
 
-    fn sleep_time(&self) -> Duration {
-        let pkt_per_microsecond = (self.target_pps as f64) / 1_000_000.0;
-        Duration::from_micros((1.0 / pkt_per_microsecond) as u64)
+        if self.stats.pkts_tx % (self.target_pps / 10) == 0 {
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     pub fn send_loop(&mut self) {
