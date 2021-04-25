@@ -35,7 +35,7 @@ impl RxStats {
     }
 
     pub fn pps(&self) -> f64 {
-        self.pkts_rx as f64 / (self.duration().as_secs()) as f64
+        self.pkts_rx as f64 / self.duration().as_secs_f64()
     }
 }
 

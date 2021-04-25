@@ -95,7 +95,7 @@ impl<'a> Xsk2<'a> {
         let tx_frames = frames[..n_tx_frames].into();
         let rx_frames = frames[n_tx_frames..].into();
 
-        let tx_channel_capacity = 1;
+        let tx_channel_capacity = 100_000;
         let rx_channel_capacity = 100_000;
 
         let (tx_pkt_send, tx_pkt_recv) = bounded(tx_channel_capacity);

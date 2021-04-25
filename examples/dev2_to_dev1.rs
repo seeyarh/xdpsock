@@ -17,7 +17,7 @@ use xsk_rs::{
     xsk::{ParsedPacket, Xsk2},
 };
 
-#[derive(Clap, Debug)]
+#[derive(Clap, Debug, Clone)]
 enum Mode {
     Tx,
     Rx,
@@ -25,33 +25,43 @@ enum Mode {
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
-#[derive(Clap)]
+#[derive(Debug, Clone, Clap)]
 #[clap(version = "1.0", author = "Collins Huff")]
 struct Opts {
     /// interface name
     #[clap(short, long)]
     dev: String,
+
     /// source IP address
     #[clap(long)]
     src_ip: String,
+
     /// source port
     #[clap(long)]
     src_port: u16,
+
     /// destination IP address
     #[clap(long)]
     dest_ip: String,
+
     /// destination port
     #[clap(long)]
     dest_port: u16,
+
     /// A level of verbosity, and can be used multiple times
     #[clap(short, long, parse(from_occurrences))]
     verbose: i32,
+
     /// Transmit or Receive mode
     #[clap(subcommand)]
     mode: Mode,
+
     /// Number of packets to transmit or wait to receive
     #[clap(short, long)]
     n_pkts: u64,
+
+    #[clap(long)]
+    n_threads: Option<u64>,
 }
 
 fn main() {
@@ -89,24 +99,41 @@ fn main() {
 }
 
 fn spawn_tx(mut xsk: Xsk2, opts: Opts) {
+    let n_send_threads = match opts.n_threads {
+        Some(n) => n,
+        None => 1,
+    };
+    eprintln!("sending {} pkts", opts.n_pkts);
+
     let filter = Filter::new(&opts.src_ip, opts.src_port, &opts.dest_ip, opts.dest_port).unwrap();
 
-    eprintln!("sending {} pkts", opts.n_pkts);
     let tx_send = xsk.tx_sender().unwrap();
-    let send_handle = thread::spawn(move || {
-        let start = Instant::now();
-        for i in 0..opts.n_pkts {
-            let pkt_builder = PacketBuilder::ethernet2([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
-                .ipv4(filter.src_ip, filter.dest_ip, 20)
-                .udp(filter.src_port, filter.dest_port);
-            let pkt_with_payload = generate_pkt(pkt_builder, i);
-            tx_send.send(pkt_with_payload).unwrap();
-        }
-        let duration = start.elapsed();
-        eprintln!("send time is: {:?}", duration);
-    });
+    let mut send_handles = vec![];
+    let pkts_per_thread = opts.n_pkts / n_send_threads;
+    for i in 0..n_send_threads {
+        let n_start = i * pkts_per_thread;
+        let n_end = n_start + pkts_per_thread;
+        eprintln!("thread {} sending nums {} to {}", i, n_start, n_end);
+        let filter = filter.clone();
+        let tx_send = tx_send.clone();
 
-    send_handle.join().expect("failed to join tx handle");
+        let send_handle = thread::spawn(move || {
+            for n in n_start..n_end {
+                let pkt_builder = PacketBuilder::ethernet2([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
+                    .ipv4(filter.src_ip, filter.dest_ip, 20)
+                    .udp(filter.src_port, filter.dest_port);
+                let pkt_with_payload = generate_pkt(pkt_builder, n);
+                tx_send.send(pkt_with_payload).unwrap();
+            }
+        });
+
+        send_handles.push(send_handle);
+    }
+    drop(tx_send);
+
+    for handle in send_handles.into_iter() {
+        handle.join().expect("failed to join tx handle");
+    }
     let tx_stats = xsk.shutdown_tx().expect("failed to shutdown tx");
     let rx_stats = xsk.shutdown_rx().expect("failed to shut down rx");
     eprintln!("tx_stats = {:?}", tx_stats);
@@ -129,6 +156,7 @@ fn generate_pkt(pkt_builder: PacketBuilderStep<UdpHeader>, n: u64) -> Vec<u8> {
     result
 }
 
+#[derive(Debug, Clone)]
 struct Filter {
     src_ip: [u8; 4],
     src_port: u16,
