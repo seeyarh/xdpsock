@@ -1,3 +1,4 @@
+use errno::errno;
 use libbpf_sys::{xsk_ring_cons, xsk_ring_prod, xsk_socket, xsk_socket_config};
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT};
 use std::{
@@ -124,9 +125,11 @@ impl Socket<'_> {
         };
 
         if err != 0 {
+            let e = errno();
+            log::error!("xsk_socket__create() failed: {}", e);
             return Err(SocketCreateError::OsError {
                 context: "failed to create AF_XDP socket via xsk_socket__create()",
-                io_err: io::Error::from_raw_os_error(err),
+                io_err: io::Error::from_raw_os_error(e.0),
             });
         }
 

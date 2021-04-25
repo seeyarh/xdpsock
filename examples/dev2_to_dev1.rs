@@ -12,7 +12,7 @@ use etherparse::{
 };
 
 use xsk_rs::{
-    socket::{SocketConfig, SocketConfigBuilder},
+    socket::{BindFlags, SocketConfig, SocketConfigBuilder, XdpFlags},
     umem::{UmemConfig, UmemConfigBuilder},
     xsk::{ParsedPacket, Xsk2},
 };
@@ -31,6 +31,14 @@ struct Opts {
     /// interface name
     #[clap(short, long)]
     dev: String,
+
+    /// source MAC address
+    #[clap(long)]
+    src_mac: String,
+
+    /// destination MAC address
+    #[clap(long)]
+    dest_mac: String,
 
     /// source IP address
     #[clap(long)]
@@ -78,6 +86,8 @@ fn main() {
     let socket_config = SocketConfigBuilder::new()
         .tx_queue_size(4096)
         .rx_queue_size(4096)
+        .bind_flags(BindFlags::XDP_COPY)
+        .xdp_flags(XdpFlags::XDP_FLAGS_SKB_MODE)
         .build()
         .unwrap();
 
@@ -105,6 +115,8 @@ fn spawn_tx(mut xsk: Xsk2, opts: Opts) {
     };
     eprintln!("sending {} pkts", opts.n_pkts);
 
+    let src_mac = parse_mac(&opts.src_mac).expect("failed to parse src mac addr");
+    let dest_mac = parse_mac(&opts.dest_mac).expect("failed to parse dest mac addr");
     let filter = Filter::new(&opts.src_ip, opts.src_port, &opts.dest_ip, opts.dest_port).unwrap();
 
     let tx_send = xsk.tx_sender().unwrap();
@@ -119,7 +131,7 @@ fn spawn_tx(mut xsk: Xsk2, opts: Opts) {
 
         let send_handle = thread::spawn(move || {
             for n in n_start..n_end {
-                let pkt_builder = PacketBuilder::ethernet2([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
+                let pkt_builder = PacketBuilder::ethernet2(src_mac, dest_mac)
                     .ipv4(filter.src_ip, filter.dest_ip, 20)
                     .udp(filter.src_port, filter.dest_port);
                 let pkt_with_payload = generate_pkt(pkt_builder, n);
@@ -242,4 +254,18 @@ fn filter_pkt(pkt: &ParsedPacket, filter: &Filter) -> bool {
     }
 
     ip_match && transport_match
+}
+
+fn parse_mac(mac: &str) -> Result<[u8; 6], Box<dyn Error>> {
+    let mut mac_bytes: [u8; 6] = [0; 6];
+    let parts: Vec<&str> = mac.split(':').into_iter().collect();
+    if parts.len() != 6 {
+        Err("wrong len".into())
+    } else {
+        for (i, part) in parts.iter().enumerate() {
+            let mac_byte = u8::from_str_radix(part, 16)?;
+            mac_bytes[i] = mac_byte;
+        }
+        Ok(mac_bytes)
+    }
 }
