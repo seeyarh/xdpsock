@@ -18,7 +18,7 @@ pub enum FrameStatus {
 impl FrameStatus {
     pub fn is_free(&self) -> bool {
         match self {
-            Free => true,
+            FrameStatus::Free => true,
             _ => false,
         }
     }

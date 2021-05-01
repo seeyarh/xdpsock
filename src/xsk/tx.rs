@@ -1,7 +1,5 @@
 //! Transmit end of AF_XDP socket
 
-use crate::{socket::*, umem::*};
-
 use std::error::Error;
 use std::fmt;
 use std::sync::{
@@ -12,6 +10,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
+
+use crate::xsk::xsk::MAX_PACKET_SIZE;
+use crate::{socket::*, umem::*};
 
 #[derive(Debug)]
 pub struct TxStats {
@@ -62,7 +63,7 @@ pub struct XskTx<'a> {
     pub tx_q: TxQueue<'a>,
     pub comp_q: CompQueue<'a>,
     pub tx_frames: Vec<Frame<'a>>,
-    pub pkts_to_send: Receiver<Vec<u8>>,
+    pub pkts_to_send: Receiver<([u8; MAX_PACKET_SIZE], usize)>,
     pub outstanding_tx_frames: u64,
     pub tx_poll_ms_timeout: i32,
     pub tx_cursor: usize,
@@ -86,10 +87,11 @@ impl<'a> XskTx<'a> {
 
     pub fn send_loop(&mut self) {
         let pkt_iter = self.pkts_to_send.clone().into_iter();
-        for data in pkt_iter {
+        for (pkt, len) in pkt_iter {
             loop {
                 self.rate_limit();
-                match self.send(&data) {
+                let pkt = &pkt[..len];
+                match self.send(&pkt) {
                     Ok(_) => {
                         self.stats.pkts_tx += 1;
                         break;
