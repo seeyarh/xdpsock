@@ -30,11 +30,11 @@ rusty_fork_test! {
     #[test]
     fn rx_queue_consumes_nothing_if_no_tx_and_fill_q_empty() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            assert_eq!(dev1.rx_q.consume(&mut dev1.frame_descs[..2]), 0);
+            assert_eq!(dev1.rx_q.consume(&mut dev1.rx_frames[..2]), 0);
 
             assert_eq!(
                 dev1.rx_q
-                    .poll_and_consume(&mut dev1.frame_descs[..2], 100)
+                    .poll_and_consume(&mut dev1.rx_frames[..2], 100)
                     .unwrap(),
                 0
             );
@@ -60,17 +60,17 @@ rusty_fork_test! {
             assert_eq!(
                 unsafe {
                     dev2.tx_q
-                        .produce_and_wakeup(&dev2.frame_descs[..4])
+                        .produce_and_wakeup(&dev2.tx_frames[..4])
                         .unwrap()
                 },
                 4
             );
 
-            assert_eq!(dev1.rx_q.consume(&mut dev1.frame_descs[..4]), 0);
+            assert_eq!(dev1.rx_q.consume(&mut dev1.rx_frames[..4]), 0);
 
             assert_eq!(
                 dev1.rx_q
-                    .poll_and_consume(&mut dev1.frame_descs[..4], 100)
+                    .poll_and_consume(&mut dev1.rx_frames[..4], 100)
                     .unwrap(),
                 0
             );
@@ -91,26 +91,26 @@ rusty_fork_test! {
 
 rusty_fork_test! {
     #[test]
-     fn rx_queue_consumes_frame_correctly_after_tx() {
+    fn rx_queue_consumes_frame_correctly_after_tx() {
         fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
             // Add a frame in the dev1 fill queue ready to receive
-            assert_eq!(unsafe { dev1.fill_q.produce(&dev1.frame_descs[0..1]) }, 1);
+            assert_eq!(unsafe { dev1.fill_q.produce(&mut dev1.rx_frames[0..1]) }, 1);
 
             // Data to send from dev2
             let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
 
             // Write data to UMEM
             unsafe {
-                dev2.frame_descs[0].write_to_umem_checked(&pkt[..]).unwrap();
+                dev2.tx_frames[0].write_to_umem_checked(&pkt[..]).unwrap();
             }
 
-            assert_eq!(dev2.frame_descs[0].len(), 5);
+            assert_eq!(dev2.tx_frames[0].len(), 5);
 
             // Transmit data
             assert_eq!(
                 unsafe {
                     dev2.tx_q
-                        .produce_and_wakeup(&dev2.frame_descs[0..1])
+                        .produce_and_wakeup(&dev2.tx_frames[0..1])
                         .unwrap()
                 },
                 1
@@ -122,15 +122,15 @@ rusty_fork_test! {
             thread::sleep(Duration::from_millis(5));
 
             // Read on dev1
-            let frames_consumed = dev1.rx_q.consume(&mut dev1.frame_descs[..]);
+            let frames_consumed = dev1.rx_q.consume(&mut dev1.rx_frames[..]);
             assert_eq!(frames_consumed, 1);
 
-            assert_eq!(dev1.frame_descs[0].len(), 5);
+            assert_eq!(dev1.rx_frames[0].len(), 5);
 
             // Check that the data is correct
             let recvd = unsafe {
-                dev1.frame_descs[0]
-                    .read_from_umem_checked(dev1.frame_descs[0].len())
+                dev1.rx_frames[0]
+                    .read_from_umem_checked(dev1.rx_frames[0].len())
                     .unwrap()
             };
 
@@ -155,23 +155,23 @@ rusty_fork_test! {
     fn rx_queue_recvd_packet_offset_after_tx_includes_xdp_and_frame_headroom() {
         fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
             // Add a frame in the dev1 fill queue ready to receive
-            assert_eq!(unsafe { dev1.fill_q.produce(&dev1.frame_descs[0..1]) }, 1);
+            assert_eq!(unsafe { dev1.fill_q.produce(&mut dev1.rx_frames[0..1]) }, 1);
 
             // Data to send from dev2
             let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
 
             // Write data to UMEM
             unsafe {
-                dev2.frame_descs[0].write_to_umem_checked(&pkt[..]).unwrap();
+                dev2.tx_frames[0].write_to_umem_checked(&pkt[..]).unwrap();
             }
 
-            assert_eq!(dev2.frame_descs[0].len(), 5);
+            assert_eq!(dev2.tx_frames[0].len(), 5);
 
             // Transmit data
             assert_eq!(
                 unsafe {
                     dev2.tx_q
-                        .produce_and_wakeup(&dev2.frame_descs[0..1])
+                        .produce_and_wakeup(&dev2.tx_frames[0..1])
                         .unwrap()
                 },
                 1
@@ -181,14 +181,14 @@ rusty_fork_test! {
             thread::sleep(Duration::from_millis(5));
 
             // Read on dev1
-            assert_eq!(dev1.rx_q.consume(&mut dev1.frame_descs[..]), 1);
+            assert_eq!(dev1.rx_q.consume(&mut dev1.rx_frames[..]), 1);
 
-            assert_eq!(dev1.frame_descs[0].len(), 5);
+            assert_eq!(dev1.rx_frames[0].len(), 5);
 
             // Check addr starts where we expect
             assert_eq!(
-                dev1.frame_descs[0].addr(),
-                (XDP_PACKET_HEADROOM + 512) as usize
+                dev1.rx_frames[0].addr(),
+                (XDP_PACKET_HEADROOM + 512 + 8192) as usize // we're using the second half of the frames for rx
             );
         }
 

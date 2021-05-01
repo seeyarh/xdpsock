@@ -29,7 +29,7 @@ pub use socket::{
 
 #[cfg(all(target_pointer_width = "64", target_family = "unix"))]
 pub use umem::{
-    AccessError, CompQueue, DataError, FillQueue, FrameDesc, Umem, UmemBuilder, UmemConfig,
+    AccessError, CompQueue, DataError, FillQueue, Frame, Umem, UmemBuilder, UmemConfig,
     UmemConfigBuilder, WriteError,
 };
 

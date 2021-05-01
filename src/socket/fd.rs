@@ -1,7 +1,7 @@
 use libc::{POLLIN, POLLOUT};
 
 /// Wrapper around libc's `pollfd` struct.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PollFd {
     pollfd: libc::pollfd,
 }
@@ -19,7 +19,7 @@ impl PollFd {
 
 /// Wrapper struct around some useful helper data for managing the
 /// socket.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Fd {
     id: i32,
     pollin_fd: PollFd,

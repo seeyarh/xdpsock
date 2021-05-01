@@ -24,7 +24,7 @@ rusty_fork_test! {
     fn comp_queue_consumes_nothing_if_tx_q_unused() {
 
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let mut dev1_frames = dev1.frame_descs;
+            let dev1_frames = dev1.tx_frames;
             eprintln!("frames[1] = {}", dev1_frames[1].addr());
 
             let free_frames = dev1.comp_q.consume(4);
@@ -49,7 +49,7 @@ rusty_fork_test! {
     #[test]
     fn comp_queue_num_frames_consumed_match_those_produced() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let mut dev1_frames = dev1.frame_descs;
+            let dev1_frames = dev1.tx_frames;
 
             assert_eq!(
                 unsafe { dev1.tx_q.produce_and_wakeup(&dev1_frames[..2]).unwrap() },
@@ -83,7 +83,7 @@ rusty_fork_test! {
     #[test]
     fn comp_queue_addr_of_frames_consumed_match_addr_of_those_produced() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let dev1_tx_q_frames = dev1.frame_descs;
+            let dev1_tx_q_frames = dev1.tx_frames;
             let produced_addrs: Vec<u64> = dev1_tx_q_frames[2..4].iter().map(|f| f.addr() as u64).collect();
 
             unsafe {

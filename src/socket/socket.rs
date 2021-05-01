@@ -1,3 +1,4 @@
+use errno::errno;
 use libbpf_sys::{xsk_ring_cons, xsk_ring_prod, xsk_socket, xsk_socket_config};
 use libc::{EAGAIN, EBUSY, ENETDOWN, ENOBUFS, MSG_DONTWAIT};
 use std::{
@@ -12,7 +13,7 @@ use std::{
 };
 
 use crate::{
-    umem::{FrameDesc, Umem},
+    umem::{Frame, Umem},
     util,
 };
 
@@ -54,6 +55,7 @@ impl Error for SocketCreateError {
 ///
 /// More details can be found in the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html)
+#[derive(Debug)]
 pub struct Socket<'umem> {
     inner: Box<xsk_socket>,
     _marker: PhantomData<&'umem ()>,
@@ -63,6 +65,7 @@ pub struct Socket<'umem> {
 ///
 /// More details can be found in the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#tx-ring).
+#[derive(Debug)]
 pub struct TxQueue<'umem> {
     inner: Box<xsk_ring_prod>,
     fd: Fd,
@@ -75,6 +78,7 @@ unsafe impl Send for TxQueue<'_> {}
 ///
 /// More details can be found in the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#rx-ring).
+#[derive(Debug)]
 pub struct RxQueue<'umem> {
     inner: Box<xsk_ring_cons>,
     fd: Fd,
@@ -121,9 +125,11 @@ impl Socket<'_> {
         };
 
         if err != 0 {
+            let e = errno();
+            log::error!("xsk_socket__create() failed: {}", e);
             return Err(SocketCreateError::OsError {
                 context: "failed to create AF_XDP socket via xsk_socket__create()",
-                io_err: io::Error::from_raw_os_error(err),
+                io_err: io::Error::from_raw_os_error(e.0),
             });
         }
 
@@ -186,7 +192,7 @@ impl RxQueue<'_> {
     /// added back on to either the [FillQueue](struct.FillQueue.html)
     /// or the [TxQueue](struct.TxQueue.html).
     #[inline]
-    pub fn consume(&mut self, descs: &mut [FrameDesc]) -> usize {
+    pub fn consume(&mut self, descs: &mut [Frame]) -> usize {
         // usize <-> u64 'as' conversions are ok as the crate's top level conditional
         // compilation flags (see lib.rs) guarantee that size_of<usize> = size_of<u64>
         let nb = descs.len() as u64;
@@ -224,7 +230,7 @@ impl RxQueue<'_> {
     #[inline]
     pub fn poll_and_consume(
         &mut self,
-        descs: &mut [FrameDesc],
+        descs: &mut [Frame],
         poll_timeout: i32,
     ) -> io::Result<usize> {
         match poll::poll_read(&mut self.fd(), poll_timeout)? {
@@ -263,7 +269,7 @@ impl TxQueue<'_> {
     /// the above paragraph, this should always be the length of
     /// `descs` or `0`.
     #[inline]
-    pub unsafe fn produce(&mut self, descs: &[FrameDesc]) -> usize {
+    pub unsafe fn produce(&mut self, descs: &[Frame]) -> usize {
         // usize <-> u64 'as' conversions are ok as the crate's top level conditional
         // compilation flags (see lib.rs) guarantee that size_of<usize> = size_of<u64>
         let nb: u64 = descs.len().try_into().unwrap();
@@ -275,6 +281,7 @@ impl TxQueue<'_> {
         let mut idx: u32 = 0;
 
         let cnt = libbpf_sys::_xsk_ring_prod__reserve(self.inner.as_mut(), nb, &mut idx);
+        log::debug!("tx: _xsk_ring_prod__reserve = {}", cnt);
 
         if cnt > 0 {
             for desc in descs.iter().take(cnt.try_into().unwrap()) {
@@ -302,7 +309,7 @@ impl TxQueue<'_> {
     /// For more details see the
     /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#xdp-use-need-wakeup-bind-flag).
     #[inline]
-    pub unsafe fn produce_and_wakeup(&mut self, descs: &[FrameDesc]) -> io::Result<usize> {
+    pub unsafe fn produce_and_wakeup(&mut self, descs: &[Frame]) -> io::Result<usize> {
         let cnt = self.produce(descs);
 
         if self.needs_wakeup() {

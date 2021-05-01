@@ -1,8 +1,4 @@
-use xsk_rs::{
-    socket::*,
-    umem::*,
-    xsk::{build_socket_and_umem, Xsk},
-};
+use xsk_rs::{socket::*, umem::*, xsk::Xsk, xsk::Xsk2};
 
 mod veth_setup;
 
@@ -15,35 +11,75 @@ pub fn run_test<F>(
 ) where
     F: Fn(Xsk, Xsk) + Send + 'static,
 {
+    env_logger::init();
     let inner = move |dev1_if_name: String, dev2_if_name: String| {
         // Create the socket for the first interfaace
-        let ((umem, fill_q, comp_q, frame_descs), (tx_q, rx_q)) =
-            build_socket_and_umem(dev1_umem_config, dev1_socket_config, &dev1_if_name, 0);
 
-        let dev1_socket = Xsk {
-            if_name: dev1_if_name,
-            fill_q,
-            comp_q,
-            tx_q,
-            rx_q,
-            frame_descs,
-            umem,
-        };
+        let dev1_umem_config = dev1_umem_config.unwrap_or_default();
+        let dev2_umem_config = dev2_umem_config.unwrap_or_default();
+        let dev1_socket_config = dev1_socket_config.unwrap_or_default();
+        let dev2_socket_config = dev2_socket_config.unwrap_or_default();
 
-        let ((umem, fill_q, comp_q, frame_descs), (tx_q, rx_q)) =
-            build_socket_and_umem(dev2_umem_config, dev2_socket_config, &dev2_if_name, 0);
+        let dev1_n_tx_frames = dev1_umem_config.frame_count() / 2;
+        let dev2_n_tx_frames = dev2_umem_config.frame_count() / 2;
+        let xsk1 = Xsk::new(
+            &dev1_if_name,
+            0,
+            dev1_umem_config,
+            dev1_socket_config,
+            dev1_n_tx_frames as usize,
+        );
+        let xsk2 = Xsk::new(
+            &dev2_if_name,
+            0,
+            dev2_umem_config,
+            dev2_socket_config,
+            dev2_n_tx_frames as usize,
+        );
 
-        let dev2_socket = Xsk {
-            if_name: dev2_if_name,
-            fill_q,
-            comp_q,
-            tx_q,
-            rx_q,
-            frame_descs,
-            umem,
-        };
+        test(xsk1, xsk2)
+    };
 
-        test(dev1_socket, dev2_socket)
+    veth_setup::run_with_dev(inner);
+}
+
+pub fn run_test_2<F>(
+    dev1_umem_config: Option<UmemConfig>,
+    dev1_socket_config: Option<SocketConfig>,
+    dev2_umem_config: Option<UmemConfig>,
+    dev2_socket_config: Option<SocketConfig>,
+    test: F,
+) where
+    F: Fn(Xsk2, Xsk2) + Send + 'static,
+{
+    env_logger::init();
+    let inner = move |dev1_if_name: String, dev2_if_name: String| {
+        // Create the socket for the first interfaace
+
+        let dev1_umem_config = dev1_umem_config.unwrap_or_default();
+        let dev2_umem_config = dev2_umem_config.unwrap_or_default();
+        let dev1_socket_config = dev1_socket_config.unwrap_or_default();
+        let dev2_socket_config = dev2_socket_config.unwrap_or_default();
+
+        let dev1_n_tx_frames = dev1_umem_config.frame_count() / 2;
+        let dev2_n_tx_frames = dev2_umem_config.frame_count() / 2;
+
+        let xsk1 = Xsk2::new(
+            &dev1_if_name,
+            0,
+            dev1_umem_config,
+            dev1_socket_config,
+            dev1_n_tx_frames as usize,
+        );
+        let xsk2 = Xsk2::new(
+            &dev2_if_name,
+            0,
+            dev2_umem_config,
+            dev2_socket_config,
+            dev2_n_tx_frames as usize,
+        );
+
+        test(xsk1, xsk2)
     };
 
     veth_setup::run_with_dev(inner);
