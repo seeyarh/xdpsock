@@ -2,7 +2,7 @@ mod setup;
 use libbpf_sys::XDP_PACKET_HEADROOM;
 use rusty_fork::rusty_fork_test;
 use std::{thread, time::Duration};
-use xsk_rs::{
+use xdpsock::{
     socket::{SocketConfig, SocketConfigBuilder},
     umem::{UmemConfig, UmemConfigBuilder},
     xsk::Xsk,

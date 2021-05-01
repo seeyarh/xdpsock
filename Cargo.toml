@@ -1,13 +1,13 @@
 [package]
-name = "xsk-rs"
+name = "xdpsock"
 version = "0.2.1"
-authors = ["Douglas Gray <dbgray01@gmail.com>", "Collins Huff collinsrhuff@gmail.com"]
+authors = ["Collins Huff collinsrhuff@gmail.com", "Douglas Gray <dbgray01@gmail.com>"]
 edition = "2018"
 description = "Rust bindings for Linux AF_XDP sockets"
 license = "MIT"
-repository = "https://github.com/seeyarh/xsk-rs"
+repository = "https://github.com/seeyarh/xdpsock"
 readme = "README.md"
-keywords = ["AF_XDP", "XSK", "eBPF", "XDP"]
+keywords = ["AF_XDP", "XSK", "eBPF", "XDP", "Packet Processing", "Linux"]
 
 [dependencies]
 bitflags = "1.2.1"

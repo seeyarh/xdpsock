@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::error::Error;
-use std::io::Cursor; use std::net::Ipv4Addr;
+use std::io::Cursor;
+use std::net::Ipv4Addr;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use etherparse::{
     InternetSlice, PacketBuilder, PacketBuilderStep, SlicedPacket, TransportSlice, UdpHeader,
 };
 
-use xsk_rs::{
+use xdpsock::{
     socket::{BindFlags, SocketConfig, SocketConfigBuilder, XdpFlags},
     umem::{UmemConfig, UmemConfigBuilder},
     xsk::{Xsk2, MAX_PACKET_SIZE},

@@ -1,4 +1,4 @@
-use xsk_rs::{socket::*, umem::*, xsk::Xsk, xsk::Xsk2};
+use xdpsock::{socket::*, umem::*, xsk::Xsk, xsk::Xsk2};
 
 mod veth_setup;
 

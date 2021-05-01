@@ -1,6 +1,6 @@
 mod setup;
 use rusty_fork::rusty_fork_test;
-use xsk_rs::{
+use xdpsock::{
     socket::{SocketConfig, SocketConfigBuilder},
     umem::{UmemConfig, UmemConfigBuilder},
     xsk::Xsk,
