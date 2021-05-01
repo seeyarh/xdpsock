@@ -11,9 +11,14 @@ bitflags! {
 }
 
 bitflags! {
+    /// AF_XDP Configuration flags
     pub struct XdpFlags: u32 {
         const XDP_FLAGS_UPDATE_IF_NOEXIST = 1;
+        /// A socket buffer is allocated for each packet processed.
+        /// This is a fall-back in case your driver does not support XDP
+        /// and is slower than DRV_MODE
         const XDP_FLAGS_SKB_MODE = 2;
+        /// Enables XDP driver mode, which bypasses the socket buffer path.
         const XDP_FLAGS_DRV_MODE = 4;
         const XDP_FLAGS_HW_MODE = 8;
         const XDP_FLAGS_REPLACE = 16;
@@ -21,10 +26,17 @@ bitflags! {
 }
 
 bitflags! {
+    /// AF_XDP Configuration flags
     pub struct BindFlags: u16 {
+        /// Allows you to bind multiple sockets to the same Umem
         const XDP_SHARED_UMEM = 1;
+        /// Packets are copied from userspace, SLOW
         const XDP_COPY = 2;
+        /// Packets are NOT copied from userspace, FAST
         const XDP_ZEROCOPY = 4;
+        /// If this flag is set after the bind call,
+        /// the kernel must be woken up via a system call in order
+        /// to process packets
         const XDP_USE_NEED_WAKEUP = 8;
     }
 }
