@@ -13,7 +13,7 @@ This crate builds on the great work of [xsk-rs](https://github.com/DouglasGray/x
 ### Basic Usage
 
 ```
-use xsk_rs::{
+use xdpsock::{
     socket::{BindFlags, SocketConfig, SocketConfigBuilder, XdpFlags},
     umem::{UmemConfig, UmemConfigBuilder},
     xsk::Xsk2,
@@ -52,7 +52,38 @@ let (recvd_pkt, len) = xsk.recv().expect("failed to recv");
 
 A couple can be found in the `examples` directory.
 
-### Running tests / examples
+The example `dev2_to_dev1.rs` sends/receives udp packets using the specified
+interface. To run this example:
+```
+# Compile
+cargo build --release --examples
+
+# Add the veth pair
+sudo ip link add veth0 type veth peer name veth1
+
+# Get the MAC addresses of the veth pair
+ip link show
+11: veth1@veth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether 82:ff:40:35:17:a2 brd ff:ff:ff:ff:ff:ff
+12: veth0@veth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP mode DEFAULT group default qlen 1000
+    link/ether 9e:4f:30:9e:e1:31 brd ff:ff:ff:ff:ff:ff
+
+# Start the receiver
+sudo ./target/release/examples/dev2_to_dev1 --n-pkts=1000000 --src-ip "192.168.69.1" --src-port 1234 --dest-ip "192.168.69.2" --dest-port 4321 --dev veth1 --dest-mac "82:ff:40:35:17:a2" --src-mac "9e:4f:30:9e:e1:31" rx
+
+# In another terminal, start the sender
+sudo ./target/release/examples/dev2_to_dev1 --n-pkts=1000000 --src-ip "192.168.69.1" --src-port 1234 --dest-ip "192.168.69.2" --dest-port 4321 --dev veth0 --dest-mac "82:ff:40:35:17:a2" --src-mac "9e:4f:30:9e:e1:31" tx
+```
+
+The example `synacker.rs` listens on the specified interface and responds to TCP
+syn packets matching a given filter with a SYNACK.
+
+```
+sudo ./target/release/examples/synacker --src-ip "192.168.69.1" --dev "veth1"
+```
+
+
+### Running tests
 
 The integration tests run using [veth-util-rs](https://github.com/seeyarh/veth-util-rs),
 which creates a pair of virtual ethernet interfaces.  By default, root
@@ -65,11 +96,6 @@ the binaries directly.
 # tests
 cargo build --tests
 sudo run_all_tests.sh
-
-# examples
-cargo build --examples --release
-sudo target/release/examples/hello_xdp
-sudo target/release/examples/dev2_to_dev1 -- [FLAGS] [OPTIONS]
 ```
 
 ### Compatibility
