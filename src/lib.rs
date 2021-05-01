@@ -26,6 +26,7 @@
 //!
 //! let n_tx_frames = umem_config.frame_count() / 2;
 //!
+//! let ifname = "veth0";
 //! let mut xsk = Xsk2::new(&ifname, 0, umem_config, socket_config, n_tx_frames as usize);
 //!
 //! // Sending a packet
