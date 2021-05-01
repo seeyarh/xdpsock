@@ -13,6 +13,8 @@ use std::thread::{self, JoinHandle};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use etherparse::ReadError;
 
+pub const MAX_PACKET_SIZE: usize = 1500;
+
 /// AF_XDP socket
 pub struct Xsk<'a> {
     pub if_name: &'a str,
@@ -69,9 +71,9 @@ pub struct Xsk2<'a> {
     pub umem_config: UmemConfig,
     pub socket_config: SocketConfig,
     tx_handle: Option<JoinHandle<TxStats>>,
-    tx_channel: Option<Sender<Vec<u8>>>,
+    tx_channel: Option<Sender<([u8; MAX_PACKET_SIZE], usize)>>,
     rx_handle: Option<JoinHandle<RxStats>>,
-    rx_channel: Option<Receiver<Result<ParsedPacket, ReadError>>>,
+    rx_channel: Option<Receiver<([u8; MAX_PACKET_SIZE], usize)>>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -193,11 +195,16 @@ impl<'a> Xsk2<'a> {
 
     pub fn send(&mut self, data: &[u8]) {
         if let Some(ref mut tx_channel) = self.tx_channel {
-            tx_channel.send(data.into()).expect("failed to send");
+            let mut packet: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+            let l = std::cmp::min(MAX_PACKET_SIZE, data.len());
+            let packet_slice = &mut packet[..l];
+            packet_slice.copy_from_slice(&data[..l]);
+
+            tx_channel.send((packet, l)).expect("failed to send");
         }
     }
 
-    pub fn tx_sender(&self) -> Option<Sender<Vec<u8>>> {
+    pub fn tx_sender(&self) -> Option<Sender<([u8; MAX_PACKET_SIZE], usize)>> {
         if let Some(ref tx_channel) = self.tx_channel {
             Some(tx_channel.clone())
         } else {
@@ -205,7 +212,7 @@ impl<'a> Xsk2<'a> {
         }
     }
 
-    pub fn rx_receiver(&self) -> Option<Receiver<Result<ParsedPacket, ReadError>>> {
+    pub fn rx_receiver(&self) -> Option<Receiver<([u8; MAX_PACKET_SIZE], usize)>> {
         if let Some(ref rx_channel) = self.rx_channel {
             Some(rx_channel.clone())
         } else {
@@ -213,7 +220,7 @@ impl<'a> Xsk2<'a> {
         }
     }
 
-    pub fn recv(&mut self) -> Option<Result<ParsedPacket, ReadError>> {
+    pub fn recv(&mut self) -> Option<([u8; MAX_PACKET_SIZE], usize)> {
         if let Some(ref rx_channel) = self.rx_channel {
             let recvd = rx_channel.recv().expect("failed to recv");
             Some(recvd)

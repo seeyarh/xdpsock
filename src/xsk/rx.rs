@@ -6,12 +6,10 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::{socket::*, umem::*};
-
 use crossbeam_channel::Sender;
-use etherparse::{
-    Ethernet2Header, IpHeader, PacketHeaders, ReadError, TransportHeader, VlanHeader,
-};
+
+use crate::xsk::xsk::MAX_PACKET_SIZE;
+use crate::{socket::*, umem::*};
 
 #[derive(Debug)]
 pub struct RxStats {
@@ -42,60 +40,13 @@ impl RxStats {
 #[derive(Debug)]
 pub struct RxConfig {}
 
-const MAX_PAYLOAD_SIZE: usize = 1500;
-
-#[derive(Debug)]
-pub struct ParsedPacket {
-    pub link: Option<Ethernet2Header>,
-    pub vlan: Option<VlanHeader>,
-    pub ip: Option<IpHeader>,
-    pub transport: Option<TransportHeader>,
-    pub payload: Option<[u8; MAX_PAYLOAD_SIZE]>,
-}
-
-impl ParsedPacket {
-    fn from_bytes(data: &[u8], include_payload: bool) -> Result<Self, ReadError> {
-        let packet_headers = PacketHeaders::from_ethernet_slice(data)?;
-        if include_payload {
-            Ok(ParsedPacket::from_headers_with_payload(packet_headers))
-        } else {
-            Ok(ParsedPacket::from_headers_without_payload(packet_headers))
-        }
-    }
-
-    fn from_headers_with_payload(headers: PacketHeaders) -> Self {
-        let mut payload: [u8; MAX_PAYLOAD_SIZE] = [0; MAX_PAYLOAD_SIZE];
-        let l = std::cmp::min(MAX_PAYLOAD_SIZE, headers.payload.len());
-        let payload_slice = &mut payload[..l];
-        payload_slice.copy_from_slice(&headers.payload[..l]);
-
-        Self {
-            link: headers.link,
-            vlan: headers.vlan,
-            ip: headers.ip,
-            transport: headers.transport,
-            payload: Some(payload),
-        }
-    }
-
-    fn from_headers_without_payload(headers: PacketHeaders) -> Self {
-        Self {
-            link: headers.link,
-            vlan: headers.vlan,
-            ip: headers.ip,
-            transport: headers.transport,
-            payload: None,
-        }
-    }
-}
-
 // TODO: recvd packets when dropped should mark the frame desc as free
 #[derive(Debug)]
 pub struct XskRx<'a> {
     pub fill_q: FillQueue<'a>,
     pub rx_q: RxQueue<'a>,
     pub rx_frames: Vec<Frame<'a>>,
-    pub pkts_recvd: Sender<Result<ParsedPacket, ReadError>>,
+    pub pkts_recvd: Sender<([u8; MAX_PACKET_SIZE], usize)>,
     pub outstanding_rx_frames: u64,
     pub rx_cursor: usize,
     pub poll_ms_timeout: i32,
@@ -147,14 +98,14 @@ impl<'a> XskRx<'a> {
                             .expect("rx: failed to read from umem")
                     };
 
-                    let parsed = ParsedPacket::from_bytes(data, self.include_payload);
-                    let parsed_success = parsed.is_ok();
-                    log::debug!("rx: parse pkt {:?}", parsed);
+                    let mut packet: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+                    let l = std::cmp::min(MAX_PACKET_SIZE, data.len());
+                    let packet_slice = &mut packet[..l];
+                    packet_slice.copy_from_slice(&data[..l]);
 
-                    match self.pkts_recvd.send(parsed) {
+                    match self.pkts_recvd.send((packet, data.len())) {
                         Ok(_) => {
                             self.stats.pkts_rx += 1;
-                            self.stats.pkts_rx_parse_fail += !parsed_success as u64;
                         }
                         Err(e) => {
                             log::error!(

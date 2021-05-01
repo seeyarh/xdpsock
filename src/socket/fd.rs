@@ -1,7 +1,8 @@
 use libc::{POLLIN, POLLOUT};
+use std::fmt;
 
 /// Wrapper around libc's `pollfd` struct.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PollFd {
     pollfd: libc::pollfd,
 }
@@ -14,6 +15,12 @@ impl PollFd {
     #[inline]
     pub(crate) fn pollfd(&mut self) -> &mut libc::pollfd {
         &mut self.pollfd
+    }
+}
+
+impl fmt::Debug for PollFd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PollFd").finish()
     }
 }
 
