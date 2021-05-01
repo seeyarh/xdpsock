@@ -22,8 +22,7 @@ enum Mode {
     Rx,
 }
 
-/// This doc string acts as a help message when the user runs '--help'
-/// as do all doc strings on fields
+/// Send or Receive UDP packets on the specified interface
 #[derive(Debug, Clone, Clap)]
 #[clap(version = "1.0", author = "Collins Huff")]
 struct Opts {
