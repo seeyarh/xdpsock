@@ -1,18 +1,10 @@
 //! Transmit end of AF_XDP socket
 
+use crate::{socket::*, umem::*};
 use std::error::Error;
 use std::fmt;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use std::thread;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use crossbeam_channel::Receiver;
-
-use crate::xsk::xsk::MAX_PACKET_SIZE;
-use crate::{socket::*, umem::*};
 
 #[derive(Debug)]
 pub struct TxStats {
@@ -60,61 +52,51 @@ impl Error for XskSendError {}
 
 #[derive(Debug)]
 pub struct XskTx<'a> {
+    _umem: Arc<Umem<'a>>,
     pub tx_q: TxQueue<'a>,
     pub comp_q: CompQueue<'a>,
     pub tx_frames: Vec<Frame<'a>>,
-    pub pkts_to_send: Receiver<([u8; MAX_PACKET_SIZE], usize)>,
+    pub free_frames: Vec<u64>,
     pub outstanding_tx_frames: u64,
     pub tx_poll_ms_timeout: i32,
     pub tx_cursor: usize,
     pub frame_size: u32,
     pub stats: TxStats,
     pub batch_size: usize,
-    pub target_pps: u64,
-    pub pps_threshold: u64,
 }
 
 impl<'a> XskTx<'a> {
-    fn rate_limit(&self) {
-        if self.target_pps == 0 {
-            return;
-        }
-
-        if self.stats.pkts_tx % (self.target_pps / 10) == 0 {
-            thread::sleep(Duration::from_millis(10));
+    pub fn new(
+        umem: Arc<Umem<'a>>,
+        tx_q: TxQueue<'a>,
+        comp_q: CompQueue<'a>,
+        tx_frames: Vec<Frame<'a>>,
+        frame_size: u32,
+    ) -> Self {
+        let n_tx_frames = tx_frames.len();
+        Self {
+            _umem: umem,
+            tx_q,
+            comp_q,
+            tx_frames,
+            free_frames: vec![0; n_tx_frames],
+            outstanding_tx_frames: 0,
+            tx_poll_ms_timeout: 1,
+            tx_cursor: 0,
+            frame_size,
+            stats: TxStats::new(),
+            batch_size: 1,
         }
     }
 
-    pub fn send_loop(&mut self) {
-        let pkt_iter = self.pkts_to_send.clone().into_iter();
-        for (pkt, len) in pkt_iter {
-            loop {
-                self.rate_limit();
-                let pkt = &pkt[..len];
-                match self.send(&pkt) {
-                    Ok(_) => {
-                        self.stats.pkts_tx += 1;
-                        break;
-                    }
-                    Err(e) => match e {
-                        XskSendError::NoFreeTxFrames => {
-                            log::debug!("tx: No tx frames");
-                            thread::sleep(Duration::from_millis(5));
-                        }
-                    },
-                }
-            }
-        }
-        log::debug!("tx: send loop complete");
-        self.stats.end_time = Instant::now();
-    }
-
-    fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
+    pub fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
         log::debug!("tx: tx_cursor = {}", self.tx_cursor);
-        let free_frames = self.comp_q.consume(self.outstanding_tx_frames);
-        self.outstanding_tx_frames -= free_frames.len() as u64;
+        let n_free_frames = self
+            .comp_q
+            .consume(self.outstanding_tx_frames, &mut self.free_frames);
+        self.outstanding_tx_frames -= n_free_frames;
 
-        if free_frames.len() == 0 {
+        if n_free_frames == 0 {
             log::debug!("comp_q.consume() consumed 0 frames");
             if self.tx_q.needs_wakeup() {
                 log::debug!("tx: waking up tx_q");
@@ -122,12 +104,9 @@ impl<'a> XskTx<'a> {
                 log::debug!("tx: woke up tx_q");
             }
         }
-        log::debug!(
-            "dev2.comp_q.consume() consumed {} frames",
-            free_frames.len()
-        );
+        log::debug!("dev2.comp_q.consume() consumed {} frames", n_free_frames);
 
-        self.update_tx_frames(&free_frames);
+        self.update_tx_frames(n_free_frames as usize);
 
         if !self.tx_frames[self.tx_cursor].status.is_free() {
             return Err(XskSendError::NoFreeTxFrames);
@@ -145,6 +124,10 @@ impl<'a> XskTx<'a> {
             let end = self.tx_cursor + 1;
             log::debug!("tx: adding tx_frames[{}..{}] to tx queue", start, end);
 
+            for frame in self.tx_frames[start..end].iter_mut() {
+                frame.status = FrameStatus::OnTxQueue;
+            }
+
             while unsafe {
                 self.tx_q
                     .produce_and_wakeup(&self.tx_frames[start..end])
@@ -158,12 +141,12 @@ impl<'a> XskTx<'a> {
         }
 
         self.outstanding_tx_frames += 1;
-        self.tx_frames[self.tx_cursor].status = FrameStatus::OnTxQueue;
         self.tx_cursor = (self.tx_cursor + 1) % self.tx_frames.len();
         Ok(())
     }
 
-    fn update_tx_frames(&mut self, free_frames: &[u64]) {
+    fn update_tx_frames(&mut self, n_free_frames: usize) {
+        let free_frames = &self.free_frames[..n_free_frames];
         for free_frame in free_frames {
             let tx_frame_index = *free_frame as u32 / self.frame_size;
             log::debug!(

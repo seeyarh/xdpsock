@@ -1,17 +1,11 @@
 //! Receive end of AF_XDP socket
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Sender;
-
-use crate::xsk::xsk::MAX_PACKET_SIZE;
 use crate::{socket::*, umem::*};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RxStats {
     pub pkts_rx: u64,
     pub pkts_rx_parse_fail: u64,
@@ -43,101 +37,124 @@ pub struct RxConfig {}
 // TODO: recvd packets when dropped should mark the frame desc as free
 #[derive(Debug)]
 pub struct XskRx<'a> {
+    _umem: Arc<Umem<'a>>,
     pub fill_q: FillQueue<'a>,
     pub rx_q: RxQueue<'a>,
     pub rx_frames: Vec<Frame<'a>>,
-    pub pkts_recvd: Sender<([u8; MAX_PACKET_SIZE], usize)>,
-    pub outstanding_rx_frames: u64,
+    pub filled_frames: Vec<(usize, usize, u32)>,
+    pub n_frames_to_be_filled: u64,
+    pub frame_size: u32,
     pub rx_cursor: usize,
     pub poll_ms_timeout: i32,
-    pub shutdown: Arc<AtomicBool>,
-    pub include_payload: bool,
     pub stats: RxStats,
 }
 
 impl<'a> XskRx<'a> {
-    pub fn start_recv(&mut self) {
-        let frames_filled = unsafe { self.fill_q.produce(&mut self.rx_frames[..]) };
-        log::debug!("rx: init frames added to fill_q: {}", frames_filled);
-
-        self.recv_loop();
-        self.stats.end_time = Instant::now();
+    pub fn new(
+        umem: Arc<Umem<'a>>,
+        rx_q: RxQueue<'a>,
+        fill_q: FillQueue<'a>,
+        rx_frames: Vec<Frame<'a>>,
+        frame_size: u32,
+    ) -> Self {
+        let n_rx_frames = rx_frames.len();
+        Self {
+            _umem: umem,
+            rx_q,
+            fill_q,
+            rx_frames,
+            filled_frames: vec![(0, 0, 0); n_rx_frames],
+            n_frames_to_be_filled: 0,
+            frame_size,
+            rx_cursor: 0,
+            poll_ms_timeout: 1,
+            stats: RxStats::new(),
+        }
     }
 
-    // TODO: Do we need an RX cursor? Will the addresses received in poll and consume always be in
-    // the correct order?
-    fn recv_loop(&mut self) {
-        while !self.shutdown.load(Ordering::Relaxed) {
-            // check for rx packets
-            let n_frames_recv = self
-                .rx_q
-                .poll_and_consume(&mut self.rx_frames[..], self.poll_ms_timeout)
-                .unwrap();
+    pub fn recv(&mut self, pkt_receiver: &mut [u8]) -> usize {
+        // check for rx packets
+        let n_frames_recv = self
+            .rx_q
+            .poll_and_consume(
+                self.n_frames_to_be_filled,
+                &mut self.filled_frames[..],
+                self.poll_ms_timeout,
+            )
+            .unwrap();
 
-            if n_frames_recv == 0 {
-                // No frames consumed, wake up fill queue if required
-                log::debug!("rx: rx_q.poll_and_consume() consumed 0 frames");
-                if self.fill_q.needs_wakeup() {
-                    log::debug!("waking up fill_q");
-                    self.fill_q
-                        .wakeup(self.rx_q.fd(), self.poll_ms_timeout)
-                        .unwrap();
-                }
-            } else {
-                // frames consumed
-                log::debug!(
-                    "rx: rx_q.poll_and_consume() consumed {} frames",
-                    &n_frames_recv
-                );
+        self.n_frames_to_be_filled -= n_frames_recv as u64;
 
-                // Iterate over packets received, parse and send on channel
-                for frame in self.rx_frames.iter().take(n_frames_recv) {
-                    let data = unsafe {
-                        frame
-                            .read_from_umem_checked(frame.len())
-                            .expect("rx: failed to read from umem")
-                    };
+        if n_frames_recv == 0 {
+            // No frames consumed, wake up fill queue if required
+            log::debug!("rx: rx_q.poll_and_consume() consumed 0 frames");
+            if self.fill_q.needs_wakeup() {
+                log::debug!("waking up fill_q");
+                self.fill_q
+                    .wakeup(self.rx_q.fd(), self.poll_ms_timeout)
+                    .unwrap();
+            }
+        }
 
-                    let mut packet: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
-                    let l = std::cmp::min(MAX_PACKET_SIZE, data.len());
-                    let packet_slice = &mut packet[..l];
-                    packet_slice.copy_from_slice(&data[..l]);
+        // frames consumed
+        log::debug!(
+            "rx: rx_q.poll_and_consume() consumed {} frames",
+            &n_frames_recv
+        );
 
-                    match self.pkts_recvd.send((packet, data.len())) {
-                        Ok(_) => {
-                            self.stats.pkts_rx += 1;
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "failed to put parsed packet on rx channel {:?}",
-                                e.into_inner()
-                            );
-                            return;
-                        }
-                    }
-                }
+        self.update_rx_frames(n_frames_recv);
+
+        let frame = &self.rx_frames[self.rx_cursor];
+
+        match frame.status {
+            FrameStatus::Filled => {
+                let data = unsafe {
+                    frame
+                        .read_from_umem_checked(frame.len())
+                        .expect("rx: failed to read from umem")
+                };
+
+                let len = frame.len();
+                pkt_receiver.copy_from_slice(data);
 
                 // Add frames back to fill queue
                 while unsafe {
                     self.fill_q
-                        .produce_and_wakeup(
-                            &mut self.rx_frames[..n_frames_recv],
-                            self.rx_q.fd(),
-                            self.poll_ms_timeout,
-                        )
+                        .produce_and_wakeup(&mut [frame], self.rx_q.fd(), self.poll_ms_timeout)
                         .unwrap()
-                } != n_frames_recv
+                } != 1
                 {
                     // Loop until frames added to the fill ring.
                     log::debug!("rx: fill_q.produce_and_wakeup() failed to allocate");
                 }
-                log::debug!(
-                    "rx: fill_q.produce_and_wakeup() submitted {} frames",
-                    n_frames_recv
-                );
-            }
-        }
 
-        self.stats.end_time = Instant::now();
+                log::debug!("rx: fill_q.produce_and_wakeup() submitted {} frames", 1);
+
+                self.rx_frames[self.rx_cursor].status = FrameStatus::Free;
+                self.n_frames_to_be_filled += 1;
+                self.rx_cursor = (self.rx_cursor + 1) % self.rx_frames.len();
+                return len;
+            }
+            _ => return 0,
+        }
+    }
+
+    fn update_rx_frames(&mut self, n_frames_recv: usize) {
+        let filled_frames = &self.filled_frames[..n_frames_recv];
+        for filled_frame in filled_frames {
+            let rx_frame_index = (*filled_frame).0 as u32 / self.frame_size;
+            let rx_frame_len = (*filled_frame).1;
+            let rx_frame_options = (*filled_frame).2;
+
+            log::debug!(
+                "update rx_frame, rx_frame_index = {} rx_frame_len = {}, rx_frame_options = {}",
+                rx_frame_index,
+                rx_frame_len,
+                rx_frame_options,
+            );
+            self.rx_frames[rx_frame_index as usize].set_len(rx_frame_len);
+            self.rx_frames[rx_frame_index as usize].set_options(rx_frame_options);
+            self.rx_frames[rx_frame_index as usize].status = FrameStatus::Filled;
+        }
     }
 }

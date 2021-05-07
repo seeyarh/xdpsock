@@ -11,8 +11,9 @@ use super::{config::UmemConfig, mmap::MmapArea};
 #[derive(Debug, Clone, PartialEq)]
 pub enum FrameStatus {
     Free,
+    Filled,
     OnTxQueue,
-    OnRxQueue,
+    OnFillQueue,
 }
 
 impl FrameStatus {
@@ -246,17 +247,18 @@ pub struct UmemBuilderWithMmap {
     mmap_area: MmapArea,
 }
 
+#[derive(Debug)]
 struct XskUmem(*mut xsk_umem);
 
 unsafe impl Send for XskUmem {}
 
 impl Drop for XskUmem {
     fn drop(&mut self) {
-        log::debug!("deleting umem");
+        log::debug!("umem: dropping umem");
         let err = unsafe { libbpf_sys::xsk_umem__delete(self.0) };
 
         if err != 0 {
-            log::error!("xsk_umem__delete() failed: {}", errno());
+            log::error!("xsk_umem__delete({:?}) failed: {}", self.0, errno());
         }
     }
 }
@@ -264,10 +266,9 @@ impl Drop for XskUmem {
 /// A region of virtual contiguous memory divided into equal-sized
 /// frames.  It provides the underlying working memory for an AF_XDP
 /// socket.
+#[derive(Debug)]
 pub struct Umem<'a> {
     config: UmemConfig,
-    frame_size: usize,
-    umem_len: usize,
     mtu: usize,
     inner: Box<XskUmem>,
     _marker: PhantomData<&'a ()>,
@@ -374,8 +375,6 @@ impl<'a> UmemBuilderWithMmap {
 
         let umem = Umem {
             config: self.config,
-            frame_size,
-            umem_len: frame_count * frame_size,
             mtu,
             inner: Box::new(XskUmem(umem_ptr)),
             _marker: PhantomData,
@@ -443,7 +442,7 @@ impl FillQueue<'_> {
     /// to the constraint mentioned in the above paragraph, this
     /// should always be the length of `descs` or `0`.
     #[inline]
-    pub unsafe fn produce(&mut self, descs: &mut [Frame]) -> usize {
+    pub unsafe fn produce(&mut self, descs: &[&Frame]) -> usize {
         // usize <-> u64 'as' conversions are ok as the crate's top
         // level conditional compilation flags (see lib.rs) guarantee
         // that size_of<usize> = size_of<u64>
@@ -482,7 +481,7 @@ impl FillQueue<'_> {
     #[inline]
     pub unsafe fn produce_and_wakeup(
         &mut self,
-        descs: &mut [Frame],
+        descs: &[&Frame],
         socket_fd: &mut Fd,
         poll_timeout: i32,
     ) -> io::Result<usize> {
@@ -550,23 +549,22 @@ impl CompQueue<'_> {
     /// [FillQueue](struct.FillQueue.html) for data receipt or the
     /// [TxQueue](struct.TxQueue.html) for data transmission.
     #[inline]
-    pub fn consume(&mut self, n_frames: u64) -> Vec<u64> {
+    pub fn consume(&mut self, n_frames: u64, free_frames: &mut [u64]) -> u64 {
         let mut idx: u32 = 0;
 
         let cnt =
             unsafe { libbpf_sys::_xsk_ring_cons__peek(self.inner.as_mut(), n_frames, &mut idx) };
 
-        let mut free_frames = vec![];
         for i in 0..cnt {
             let addr: u64 = unsafe {
                 *libbpf_sys::_xsk_ring_cons__comp_addr(self.inner.as_mut(), idx + i as u32)
             };
-            free_frames.push(addr);
+            free_frames[i as usize] = addr;
         }
 
         unsafe { libbpf_sys::_xsk_ring_cons__release(self.inner.as_mut(), cnt) };
 
-        free_frames
+        cnt
     }
 }
 
@@ -659,7 +657,6 @@ impl Error for WriteError {}
 #[cfg(test)]
 mod tests {
     use rand;
-    use std::num::NonZeroU32;
 
     use super::*;
     use crate::umem::UmemConfig;

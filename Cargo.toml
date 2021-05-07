@@ -30,4 +30,4 @@ env_logger = "0.8.2"
 serial_test = "*"
 rusty-fork = "0.3.0"
 veth-util-rs = {git = "https://github.com/seeyarh/veth-util-rs.git", branch = "main"}
-byteorder = "1"
+byteorder = "1.4.3"

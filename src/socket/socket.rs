@@ -192,18 +192,17 @@ impl RxQueue<'_> {
     /// added back on to either the [FillQueue](struct.FillQueue.html)
     /// or the [TxQueue](struct.TxQueue.html).
     #[inline]
-    pub fn consume(&mut self, descs: &mut [Frame]) -> usize {
+    pub fn consume(&mut self, n_recv: u64, descs: &mut [(usize, usize, u32)]) -> usize {
         // usize <-> u64 'as' conversions are ok as the crate's top level conditional
         // compilation flags (see lib.rs) guarantee that size_of<usize> = size_of<u64>
-        let nb = descs.len() as u64;
-
-        if nb == 0 {
+        if n_recv == 0 {
             return 0;
         }
 
         let mut idx: u32 = 0;
 
-        let cnt = unsafe { libbpf_sys::_xsk_ring_cons__peek(self.inner.as_mut(), nb, &mut idx) };
+        let cnt =
+            unsafe { libbpf_sys::_xsk_ring_cons__peek(self.inner.as_mut(), n_recv, &mut idx) };
 
         if cnt > 0 {
             // Assuming 64-bit so u64 -> usize is ok
@@ -212,9 +211,9 @@ impl RxQueue<'_> {
                     let recv_pkt_desc =
                         libbpf_sys::_xsk_ring_cons__rx_desc(self.inner.as_mut(), idx);
 
-                    desc.set_addr((*recv_pkt_desc).addr as usize);
-                    desc.set_len((*recv_pkt_desc).len as usize);
-                    desc.set_options((*recv_pkt_desc).options);
+                    desc.0 = (*recv_pkt_desc).addr as usize;
+                    desc.1 = (*recv_pkt_desc).len as usize;
+                    desc.2 = (*recv_pkt_desc).options;
                 }
                 idx += 1;
             }
@@ -230,11 +229,12 @@ impl RxQueue<'_> {
     #[inline]
     pub fn poll_and_consume(
         &mut self,
-        descs: &mut [Frame],
+        n_recv: u64,
+        descs: &mut [(usize, usize, u32)],
         poll_timeout: i32,
     ) -> io::Result<usize> {
         match poll::poll_read(&mut self.fd(), poll_timeout)? {
-            true => Ok(self.consume(descs)),
+            true => Ok(self.consume(n_recv, descs)),
             false => Ok(0),
         }
     }

@@ -1,14 +1,13 @@
 mod setup;
 
-use rusty_fork::rusty_fork_test;
 use std::collections::HashSet;
 use std::error::Error;
-use std::io::Cursor;
-use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ByteOrder, LittleEndian};
 use etherparse::{
     InternetSlice, PacketBuilder, PacketBuilderStep, SlicedPacket, TransportSlice, UdpHeader,
 };
@@ -36,17 +35,16 @@ fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
     (Some(umem_config), Some(socket_config))
 }
 
-fn generate_pkt(pkt_builder: PacketBuilderStep<UdpHeader>, n: u64) -> Vec<u8> {
-    let mut payload = vec![];
-    payload.write_u64::<LittleEndian>(n).unwrap();
-    //get some memory to store the result
-    let mut result = Vec::<u8>::with_capacity(pkt_builder.size(payload.len()));
-
-    //serialize
+fn generate_pkt(
+    mut pkt: &mut [u8],
+    payload: &mut [u8],
+    pkt_builder: PacketBuilderStep<UdpHeader>,
+) -> usize {
+    let len = pkt_builder.size(payload.len());
     pkt_builder
-        .write(&mut result, &payload)
+        .write(&mut pkt, payload)
         .expect("failed to build packet");
-    result
+    len
 }
 
 const SRC_IP: [u8; 4] = [192, 168, 69, 1];
@@ -100,84 +98,98 @@ fn filter_pkt(parsed_pkt: &SlicedPacket, filter: &Filter) -> bool {
 
 #[test]
 fn send_recv_test() {
-    fn test_fn(mut dev1: Xsk2, mut dev2: Xsk2) {
+    fn test_fn(mut dev1: Xsk2<'static>, mut dev2: Xsk2<'static>) {
         let pkts_to_send = 1_048_576;
-
-        let tx_send = dev1.tx_sender().unwrap();
-        let rx_recv = dev2.rx_receiver().unwrap();
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
+        let send_done = Arc::new(AtomicBool::new(false));
+        let send_done_rx = send_done.clone();
+
+        let rx_timeout = Duration::from_secs(1);
+
+        thread::sleep(Duration::from_secs(10));
+
         let recv_handle = thread::spawn(move || {
+            let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+            let mut matched_recvd_pkts = 0;
             let mut recvd_nums: HashSet<u64> = HashSet::new();
-            for (pkt, len) in rx_recv.iter() {
-                match SlicedPacket::from_ethernet(&pkt[..len]) {
-                    Ok(pkt) => {
-                        if filter_pkt(&pkt, &filter) {
-                            let mut rdr = Cursor::new(&pkt.payload[0..8]);
-                            let n = rdr.read_u64::<LittleEndian>().unwrap();
-                            recvd_nums.insert(n);
+            let mut send_done_time: Option<Instant> = None;
+
+            while matched_recvd_pkts != pkts_to_send {
+                if send_done_rx.load(Ordering::Relaxed) {
+                    if let Some(send_done_time) = send_done_time {
+                        if send_done_time.elapsed() > rx_timeout {
+                            eprintln!("recv ending after timeout");
+                            break;
                         }
+                    } else {
+                        send_done_time = Some(Instant::now());
                     }
-                    Err(e) => log::warn!("failed to parse packet {:?}", e),
+                }
+
+                let len_recvd = dev1.rx.recv(&mut pkt[..]);
+                if len_recvd > 0 {
+                    match SlicedPacket::from_ethernet(&pkt[..len_recvd]) {
+                        Ok(pkt) => {
+                            if filter_pkt(&pkt, &filter) {
+                                let n = LittleEndian::read_u64(&pkt.payload[..8]);
+                                recvd_nums.insert(n);
+                                matched_recvd_pkts += 1;
+                            }
+                        }
+                        Err(e) => log::warn!("failed to parse packet {:?}", e),
+                    }
+                }
+
+                for b in &mut pkt[..len_recvd] {
+                    *b = 0;
                 }
             }
-            recvd_nums
+            (dev1, recvd_nums)
         });
 
         // give the receiver a chance to get going
         thread::sleep(Duration::from_millis(50));
 
         let send_handle = thread::spawn(move || {
+            let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+            let mut payload: [u8; 8] = [0; 8];
+
             let start = Instant::now();
             for i in 0..pkts_to_send {
                 let pkt_builder = PacketBuilder::ethernet2([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
                     .ipv4(SRC_IP, DST_IP, 20)
                     .udp(SRC_PORT, DST_PORT);
-                let pkt_with_payload = generate_pkt(pkt_builder, i);
 
-                let mut packet: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
-                let l = std::cmp::min(MAX_PACKET_SIZE, pkt_with_payload.len());
-                let packet_slice = &mut packet[..l];
-                packet_slice.copy_from_slice(&pkt_with_payload[..l]);
-
-                tx_send.send((packet, pkt_with_payload.len())).unwrap();
+                LittleEndian::write_u64(&mut payload, i);
+                let len_pkt = generate_pkt(&mut pkt[..], &mut payload[..], pkt_builder);
+                dev2.tx.send(&pkt[..len_pkt]).unwrap();
             }
+            send_done.store(true, Ordering::Relaxed);
             let duration = start.elapsed();
             eprintln!("send time is: {:?}", duration);
         });
 
         send_handle.join().expect("failed to join tx handle");
+        eprintln!("send done");
 
-        let dev1_tx_stats = dev1.shutdown_tx().expect("failed to shutdown tx");
-        eprintln!("dev1 tx_stats = {:?}", dev1_tx_stats);
-        eprintln!("dev1 tx duration = {:?}", dev1_tx_stats.duration());
-        eprintln!("dev1 tx pps = {:?}", dev1_tx_stats.pps());
-
-        let dev1_rx_stats = dev1.shutdown_rx().expect("failed to shut down rx");
-        eprintln!("dev1 rx_stats = {:?}", dev1_rx_stats);
-
-        let dev2_tx_stats = dev2.shutdown_tx().expect("failed to shut down tx");
-        eprintln!("dev2 tx_stats = {:?}", dev2_tx_stats);
-
-        let dev2_rx_stats = dev2.shutdown_rx().expect("failed to shut down rx");
-        eprintln!("dev2 rx_stats = {:?}", dev2_rx_stats);
-        eprintln!("dev2 rx duration = {:?}", dev2_rx_stats.duration());
-        eprintln!("dev2 rx pps = {:?}", dev2_rx_stats.pps());
-
+        /*
         assert_eq!(dev1_tx_stats.pkts_tx, pkts_to_send);
 
         // we can receive extra packets due to random traffic
         assert!(dev2_rx_stats.pkts_rx >= pkts_to_send);
+        */
 
-        let recvd_nums = recv_handle.join().expect("failed to join recv handle");
+        let (_dev1, recvd_nums) = recv_handle.join().expect("failed to join recv handle");
+        eprintln!("recv done");
 
         let expected_recvd_nums: Vec<u64> = (0..pkts_to_send).into_iter().collect();
 
         let mut n_missing = 0;
         for n in expected_recvd_nums.iter() {
             if !recvd_nums.contains(n) {
-                eprintln!("missing {}", n);
+                //eprintln!("missing {}", n);
                 n_missing += 1;
             }
         }

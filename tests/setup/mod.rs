@@ -50,7 +50,7 @@ pub fn run_test_2<F>(
     dev2_socket_config: Option<SocketConfig>,
     test: F,
 ) where
-    F: Fn(Xsk2, Xsk2) + Send + 'static,
+    F: Fn(Xsk2<'static>, Xsk2<'static>) + Send + 'static,
 {
     env_logger::init();
     let inner = move |dev1_if_name: String, dev2_if_name: String| {
@@ -70,14 +70,17 @@ pub fn run_test_2<F>(
             dev1_umem_config,
             dev1_socket_config,
             dev1_n_tx_frames as usize,
-        );
+        )
+        .expect("failed to build xsk2");
+
         let xsk2 = Xsk2::new(
             &dev2_if_name,
             0,
             dev2_umem_config,
             dev2_socket_config,
             dev2_n_tx_frames as usize,
-        );
+        )
+        .expect("failed to build xsk2");
 
         test(xsk1, xsk2)
     };
