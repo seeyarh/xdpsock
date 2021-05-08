@@ -52,7 +52,7 @@ impl Error for XskSendError {}
 
 #[derive(Debug)]
 pub struct XskTx<'a> {
-    _umem: Arc<Umem<'a>>,
+    //_umem: Arc<Umem<'a>>,
     pub tx_q: TxQueue<'a>,
     pub comp_q: CompQueue<'a>,
     pub tx_frames: Vec<Frame<'a>>,
@@ -67,7 +67,7 @@ pub struct XskTx<'a> {
 
 impl<'a> XskTx<'a> {
     pub fn new(
-        umem: Arc<Umem<'a>>,
+        //umem: Arc<Umem<'a>>,
         tx_q: TxQueue<'a>,
         comp_q: CompQueue<'a>,
         tx_frames: Vec<Frame<'a>>,
@@ -75,7 +75,7 @@ impl<'a> XskTx<'a> {
     ) -> Self {
         let n_tx_frames = tx_frames.len();
         Self {
-            _umem: umem,
+            //_umem: umem,
             tx_q,
             comp_q,
             tx_frames,
@@ -112,6 +112,7 @@ impl<'a> XskTx<'a> {
             return Err(XskSendError::NoFreeTxFrames);
         }
 
+        log::debug!("tx_data = {:?}", data);
         unsafe {
             self.tx_frames[self.tx_cursor]
                 .write_to_umem_checked(data)
@@ -150,7 +151,7 @@ impl<'a> XskTx<'a> {
         for free_frame in free_frames {
             let tx_frame_index = *free_frame as u32 / self.frame_size;
             log::debug!(
-                "update tx_frame, tx_frame_index = {}, free_frame = {}",
+                "update_tx_frame, tx_frame_index = {}, free_frame = {}",
                 tx_frame_index,
                 free_frame
             );

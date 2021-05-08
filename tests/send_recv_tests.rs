@@ -110,11 +110,13 @@ fn send_recv_test() {
 
         thread::sleep(Duration::from_secs(10));
 
+        eprintln!("starting receiver");
         let recv_handle = thread::spawn(move || {
             let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
             let mut matched_recvd_pkts = 0;
             let mut recvd_nums: HashSet<u64> = HashSet::new();
             let mut send_done_time: Option<Instant> = None;
+            let start = Instant::now();
 
             while matched_recvd_pkts != pkts_to_send {
                 if send_done_rx.load(Ordering::Relaxed) {
@@ -146,12 +148,16 @@ fn send_recv_test() {
                     *b = 0;
                 }
             }
+
+            let duration = start.elapsed();
+            eprintln!("receive time is: {:?}", duration);
             (dev1, recvd_nums)
         });
 
         // give the receiver a chance to get going
         thread::sleep(Duration::from_millis(50));
 
+        eprintln!("starting sender");
         let send_handle = thread::spawn(move || {
             let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
             let mut payload: [u8; 8] = [0; 8];
@@ -180,6 +186,8 @@ fn send_recv_test() {
         // we can receive extra packets due to random traffic
         assert!(dev2_rx_stats.pkts_rx >= pkts_to_send);
         */
+
+        thread::sleep(Duration::from_secs(10));
 
         let (_dev1, recvd_nums) = recv_handle.join().expect("failed to join recv handle");
         eprintln!("recv done");

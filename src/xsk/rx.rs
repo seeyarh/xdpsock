@@ -37,7 +37,7 @@ pub struct RxConfig {}
 // TODO: recvd packets when dropped should mark the frame desc as free
 #[derive(Debug)]
 pub struct XskRx<'a> {
-    _umem: Arc<Umem<'a>>,
+    //_umem: Arc<Umem<'a>>,
     pub fill_q: FillQueue<'a>,
     pub rx_q: RxQueue<'a>,
     pub rx_frames: Vec<Frame<'a>>,
@@ -51,15 +51,20 @@ pub struct XskRx<'a> {
 
 impl<'a> XskRx<'a> {
     pub fn new(
-        umem: Arc<Umem<'a>>,
+        //umem: Arc<Umem<'a>>,
         rx_q: RxQueue<'a>,
-        fill_q: FillQueue<'a>,
+        mut fill_q: FillQueue<'a>,
         rx_frames: Vec<Frame<'a>>,
         frame_size: u32,
     ) -> Self {
         let n_rx_frames = rx_frames.len();
+
+        let mut init_rx_frames: Vec<&Frame> = rx_frames.iter().collect();
+
+        let frames_filled = unsafe { fill_q.produce(&mut init_rx_frames[..]) };
+        log::debug!("rx: init frames added to fill_q: {}", frames_filled);
         Self {
-            _umem: umem,
+            //_umem: umem,
             rx_q,
             fill_q,
             rx_frames,

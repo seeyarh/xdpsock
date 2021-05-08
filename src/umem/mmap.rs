@@ -71,10 +71,12 @@ impl MmapArea {
 
 impl Drop for MmapArea {
     fn drop(&mut self) {
+        /*
         let err = unsafe { libc::munmap(self.mem_ptr, self.len) };
         if err != 0 {
             error!("munmap() failed: {}", err);
         }
+        */
     }
 }
 

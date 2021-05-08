@@ -285,6 +285,7 @@ impl TxQueue<'_> {
 
         if cnt > 0 {
             for desc in descs.iter().take(cnt.try_into().unwrap()) {
+                log::debug!("tx_desc = {:?}", desc);
                 let send_pkt_desc = libbpf_sys::_xsk_ring_prod__tx_desc(self.inner.as_mut(), idx);
 
                 (*send_pkt_desc).addr = desc.addr() as u64;

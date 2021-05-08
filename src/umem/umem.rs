@@ -197,6 +197,7 @@ impl Frame<'_> {
             let umem_region = self.mmap_area.mem_range_mut(&self.addr(), &data_len);
 
             umem_region[..data_len].copy_from_slice(data);
+            log::debug!("write_to_umem {:?}", umem_region);
         }
 
         self.set_len(data_len);
