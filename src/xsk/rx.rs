@@ -42,6 +42,7 @@ pub struct XskRx<'a> {
     pub rx_q: RxQueue<'a>,
     pub rx_frames: Vec<Frame<'a>>,
     pub filled_frames: Vec<(usize, usize, u32)>,
+    pub rx_frame_offset: usize,
     pub n_frames_to_be_filled: u64,
     pub frame_size: u32,
     pub rx_cursor: usize,
@@ -60,6 +61,12 @@ impl<'a> XskRx<'a> {
         let n_rx_frames = rx_frames.len();
 
         let mut init_rx_frames: Vec<&Frame> = rx_frames.iter().collect();
+        let rx_frame_offset = init_rx_frames[0].addr();
+        log::debug!("init_rx_frames[0] = {:?}", init_rx_frames[0]);
+        log::debug!(
+            "init_rx_frames[-1] = {:?}",
+            init_rx_frames[init_rx_frames.len() - 1]
+        );
 
         let frames_filled = unsafe { fill_q.produce(&mut init_rx_frames[..]) };
         log::debug!("rx: init frames added to fill_q: {}", frames_filled);
@@ -69,7 +76,8 @@ impl<'a> XskRx<'a> {
             fill_q,
             rx_frames,
             filled_frames: vec![(0, 0, 0); n_rx_frames],
-            n_frames_to_be_filled: 0,
+            rx_frame_offset,
+            n_frames_to_be_filled: n_rx_frames as u64,
             frame_size,
             rx_cursor: 0,
             poll_ms_timeout: 1,
@@ -119,8 +127,9 @@ impl<'a> XskRx<'a> {
                         .expect("rx: failed to read from umem")
                 };
 
+                log::debug!("rx_data: len = {} = {:?}", frame.len(), data);
                 let len = frame.len();
-                pkt_receiver.copy_from_slice(data);
+                pkt_receiver[..len].copy_from_slice(data);
 
                 // Add frames back to fill queue
                 while unsafe {
@@ -147,7 +156,10 @@ impl<'a> XskRx<'a> {
     fn update_rx_frames(&mut self, n_frames_recv: usize) {
         let filled_frames = &self.filled_frames[..n_frames_recv];
         for filled_frame in filled_frames {
-            let rx_frame_index = (*filled_frame).0 as u32 / self.frame_size;
+            log::debug!("filled_frame = {:?}", filled_frame);
+            let rx_frame_index =
+                ((*filled_frame).0 as u32 - self.rx_frame_offset as u32) / self.frame_size;
+            let rx_frame_addr = (*filled_frame).0;
             let rx_frame_len = (*filled_frame).1;
             let rx_frame_options = (*filled_frame).2;
 
@@ -157,6 +169,7 @@ impl<'a> XskRx<'a> {
                 rx_frame_len,
                 rx_frame_options,
             );
+            self.rx_frames[rx_frame_index as usize].set_addr(rx_frame_addr);
             self.rx_frames[rx_frame_index as usize].set_len(rx_frame_len);
             self.rx_frames[rx_frame_index as usize].set_options(rx_frame_options);
             self.rx_frames[rx_frame_index as usize].status = FrameStatus::Filled;

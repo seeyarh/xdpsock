@@ -170,7 +170,8 @@ fn send_recv_test() {
 
                 LittleEndian::write_u64(&mut payload, i);
                 let len_pkt = generate_pkt(&mut pkt[..], &mut payload[..], pkt_builder);
-                dev2.tx.send(&pkt[..len_pkt]).unwrap();
+
+                while let Err(_) = dev2.tx.send(&pkt[..len_pkt]) {}
             }
             send_done.store(true, Ordering::Relaxed);
             let duration = start.elapsed();
