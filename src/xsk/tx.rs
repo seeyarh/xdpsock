@@ -6,9 +6,10 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TxStats {
     pub pkts_tx: u64,
+    pub pkts_tx_completed: u64,
     pub start_time: Instant,
     pub end_time: Instant,
 }
@@ -17,6 +18,7 @@ impl TxStats {
     pub fn new() -> Self {
         Self {
             pkts_tx: 0,
+            pkts_tx_completed: 0,
             start_time: Instant::now(),
             end_time: Instant::now(),
         }
@@ -90,21 +92,23 @@ impl<'a> XskTx<'a> {
     }
 
     pub fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
-        log::debug!("tx: tx_cursor = {}", self.tx_cursor);
+        //log::debug!("tx: tx_cursor = {}", self.tx_cursor);
         let n_free_frames = self
             .comp_q
             .consume(self.outstanding_tx_frames, &mut self.free_frames);
         self.outstanding_tx_frames -= n_free_frames;
 
+        self.stats.pkts_tx_completed += n_free_frames;
+
         if n_free_frames == 0 {
-            log::debug!("comp_q.consume() consumed 0 frames");
+            //log::debug!("comp_q.consume() consumed 0 frames");
             if self.tx_q.needs_wakeup() {
-                log::debug!("tx: waking up tx_q");
+                //log::debug!("tx: waking up tx_q");
                 self.tx_q.wakeup().expect("failed to wake up tx queue");
-                log::debug!("tx: woke up tx_q");
+                //log::debug!("tx: woke up tx_q");
             }
         }
-        log::debug!("dev2.comp_q.consume() consumed {} frames", n_free_frames);
+        //log::debug!("dev2.comp_q.consume() consumed {} frames", n_free_frames);
 
         self.update_tx_frames(n_free_frames as usize);
 
@@ -112,7 +116,7 @@ impl<'a> XskTx<'a> {
             return Err(XskSendError::NoFreeTxFrames);
         }
 
-        log::debug!("tx_data = {:?}", data);
+        //log::debug!("tx_data = {:?}", data);
         unsafe {
             self.tx_frames[self.tx_cursor]
                 .write_to_umem_checked(data)
@@ -123,7 +127,7 @@ impl<'a> XskTx<'a> {
         if ((self.tx_cursor + 1) % self.batch_size) == 0 {
             let start = self.tx_cursor + 1 - self.batch_size;
             let end = self.tx_cursor + 1;
-            log::debug!("tx: adding tx_frames[{}..{}] to tx queue", start, end);
+            //log::debug!("tx: adding tx_frames[{}..{}] to tx queue", start, end);
 
             for frame in self.tx_frames[start..end].iter_mut() {
                 frame.status = FrameStatus::OnTxQueue;
@@ -136,11 +140,12 @@ impl<'a> XskTx<'a> {
             } != self.batch_size
             {
                 // Loop until frames added to the tx ring.
-                log::debug!("tx_q.produce_and_wakeup() failed to allocate");
+                //log::debug!("tx_q.produce_and_wakeup() failed to allocate");
             }
-            log::debug!("tx_q.produce_and_wakeup() submitted {} frames", 1);
+            //log::debug!("tx_q.produce_and_wakeup() submitted {} frames", 1);
         }
 
+        self.stats.pkts_tx += 1;
         self.outstanding_tx_frames += 1;
         self.tx_cursor = (self.tx_cursor + 1) % self.tx_frames.len();
         Ok(())
@@ -150,12 +155,18 @@ impl<'a> XskTx<'a> {
         let free_frames = &self.free_frames[..n_free_frames];
         for free_frame in free_frames {
             let tx_frame_index = *free_frame as u32 / self.frame_size;
+            /*
             log::debug!(
                 "update_tx_frame, tx_frame_index = {}, free_frame = {}",
                 tx_frame_index,
                 free_frame
             );
+            */
             self.tx_frames[tx_frame_index as usize].status = FrameStatus::Free;
         }
+    }
+
+    pub fn stats(&self) -> TxStats {
+        self.stats.clone()
     }
 }

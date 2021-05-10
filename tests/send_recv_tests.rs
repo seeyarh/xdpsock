@@ -99,22 +99,20 @@ fn filter_pkt(parsed_pkt: &SlicedPacket, filter: &Filter) -> bool {
 #[test]
 fn send_recv_test() {
     fn test_fn(mut dev1: Xsk2<'static>, mut dev2: Xsk2<'static>) {
-        let pkts_to_send = 1_048_576;
+        let pkts_to_send = 1_000_000 as u64;
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
         let send_done = Arc::new(AtomicBool::new(false));
         let send_done_rx = send_done.clone();
 
-        let rx_timeout = Duration::from_secs(1);
-
-        thread::sleep(Duration::from_secs(10));
+        let rx_timeout = Duration::from_secs(5);
 
         eprintln!("starting receiver");
         let recv_handle = thread::spawn(move || {
             let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
             let mut matched_recvd_pkts = 0;
-            let mut recvd_nums: HashSet<u64> = HashSet::new();
+            let mut recvd_nums: HashSet<u64> = HashSet::with_capacity(pkts_to_send as usize);
             let mut send_done_time: Option<Instant> = None;
             let start = Instant::now();
 
@@ -143,6 +141,7 @@ fn send_recv_test() {
                         Err(e) => log::warn!("failed to parse packet {:?}", e),
                     }
                 }
+                recvd_nums.insert(1);
 
                 for b in &mut pkt[..len_recvd] {
                     *b = 0;
@@ -151,7 +150,7 @@ fn send_recv_test() {
 
             let duration = start.elapsed();
             eprintln!("receive time is: {:?}", duration);
-            (dev1, recvd_nums)
+            (dev1.rx.stats(), recvd_nums)
         });
 
         // give the receiver a chance to get going
@@ -164,6 +163,7 @@ fn send_recv_test() {
 
             let start = Instant::now();
             for i in 0..pkts_to_send {
+                //thread::sleep(Duration::from_millis(1));
                 let pkt_builder = PacketBuilder::ethernet2([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
                     .ipv4(SRC_IP, DST_IP, 20)
                     .udp(SRC_PORT, DST_PORT);
@@ -176,9 +176,10 @@ fn send_recv_test() {
             send_done.store(true, Ordering::Relaxed);
             let duration = start.elapsed();
             eprintln!("send time is: {:?}", duration);
+            dev2.tx.stats()
         });
 
-        send_handle.join().expect("failed to join tx handle");
+        let tx_stats = send_handle.join().expect("failed to join tx handle");
         eprintln!("send done");
 
         /*
@@ -188,10 +189,11 @@ fn send_recv_test() {
         assert!(dev2_rx_stats.pkts_rx >= pkts_to_send);
         */
 
-        thread::sleep(Duration::from_secs(10));
-
-        let (_dev1, recvd_nums) = recv_handle.join().expect("failed to join recv handle");
+        let (rx_stats, recvd_nums) = recv_handle.join().expect("failed to join recv handle");
         eprintln!("recv done");
+
+        eprintln!("tx stats {:?}", tx_stats);
+        eprintln!("rx stats {:?}", rx_stats);
 
         let expected_recvd_nums: Vec<u64> = (0..pkts_to_send).into_iter().collect();
 
