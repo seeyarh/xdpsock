@@ -164,6 +164,8 @@ impl<'a> XskTx<'a> {
     }
 
     pub fn stats(&self) -> TxStats {
-        self.stats.clone()
+        let mut stats = self.stats.clone();
+        stats.end_time = Instant::now();
+        stats
     }
 }

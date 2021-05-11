@@ -1,19 +1,17 @@
 use std::collections::HashSet;
 use std::error::Error;
-use std::io::Cursor;
 use std::net::Ipv4Addr;
-use std::thread;
 use std::time::{Duration, Instant};
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ByteOrder, LittleEndian};
 use clap::Clap;
 use etherparse::{
     InternetSlice, PacketBuilder, PacketBuilderStep, SlicedPacket, TransportSlice, UdpHeader,
 };
 
 use xdpsock::{
-    socket::{BindFlags, SocketConfig, SocketConfigBuilder, XdpFlags},
-    umem::{UmemConfig, UmemConfigBuilder},
+    socket::{BindFlags, SocketConfigBuilder, XdpFlags},
+    umem::UmemConfigBuilder,
     xsk::{Xsk2, MAX_PACKET_SIZE},
 };
 
@@ -67,8 +65,9 @@ struct Opts {
     #[clap(short, long)]
     n_pkts: u64,
 
-    #[clap(long)]
-    n_threads: Option<u64>,
+    /// Number of seconds before the sender/receiver will timeout
+    #[clap(short, long)]
+    timeout_sec: Option<u64>,
 }
 
 fn main() {
@@ -93,13 +92,14 @@ fn main() {
     let n_tx_frames = umem_config.frame_count() / 2;
 
     let dev_ifname = opts.dev.clone();
-    let mut xsk = Xsk2::new(
+    let xsk = Xsk2::new(
         &dev_ifname,
         0,
         umem_config,
         socket_config,
         n_tx_frames as usize,
-    );
+    )
+    .expect("failed to build xsk");
 
     match opts.mode {
         Mode::Tx => spawn_tx(xsk, opts),
@@ -108,72 +108,52 @@ fn main() {
 }
 
 fn spawn_tx(mut xsk: Xsk2, opts: Opts) {
-    let n_send_threads = match opts.n_threads {
-        Some(n) => n,
-        None => 1,
-    };
     eprintln!("sending {} pkts", opts.n_pkts);
 
     let src_mac = parse_mac(&opts.src_mac).expect("failed to parse src mac addr");
     let dest_mac = parse_mac(&opts.dest_mac).expect("failed to parse dest mac addr");
     let filter = Filter::new(&opts.src_ip, opts.src_port, &opts.dest_ip, opts.dest_port).unwrap();
 
-    let tx_send = xsk.tx_sender().unwrap();
-    let mut send_handles = vec![];
-    let pkts_per_thread = opts.n_pkts / n_send_threads;
-    for i in 0..n_send_threads {
-        let n_start = i * pkts_per_thread;
-        let n_end = n_start + pkts_per_thread;
-        eprintln!("thread {} sending nums {} to {}", i, n_start, n_end);
-        let filter = filter.clone();
-        let tx_send = tx_send.clone();
+    let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+    let mut payload: [u8; 8] = [0; 8];
 
-        let send_handle = thread::spawn(move || {
-            for n in n_start..n_end {
-                let pkt_builder = PacketBuilder::ethernet2(src_mac, dest_mac)
-                    .ipv4(filter.src_ip, filter.dest_ip, 20)
-                    .udp(filter.src_port, filter.dest_port);
+    let start = Instant::now();
+    let timeout = match opts.timeout_sec {
+        Some(timeout) => Duration::from_secs(timeout),
+        None => Duration::from_secs(DEFAULT_TIMEOUT),
+    };
 
-                let pkt_with_payload = generate_pkt(pkt_builder, n);
+    for i in 0..opts.n_pkts {
+        if start.elapsed() > timeout {
+            break;
+        }
+        //thread::sleep(Duration::from_millis(1));
+        let pkt_builder = PacketBuilder::ethernet2(src_mac, dest_mac)
+            .ipv4(filter.src_ip, filter.dest_ip, 20)
+            .udp(filter.src_port, filter.dest_port);
 
-                let mut packet: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
-                let l = std::cmp::min(MAX_PACKET_SIZE, pkt_with_payload.len());
-                let packet_slice = &mut packet[..l];
-                packet_slice.copy_from_slice(&pkt_with_payload[..l]);
+        LittleEndian::write_u64(&mut payload, i);
+        let len_pkt = generate_pkt(&mut pkt[..], &mut payload[..], pkt_builder);
 
-                tx_send
-                    .send((packet, pkt_with_payload.len()))
-                    .expect("failed to put packet on tx queue");
-            }
-        });
-
-        send_handles.push(send_handle);
+        while let Err(_) = xsk.tx.send(&pkt[..len_pkt]) {}
     }
-    drop(tx_send);
 
-    for handle in send_handles.into_iter() {
-        handle.join().expect("failed to join tx handle");
-    }
-    let tx_stats = xsk.shutdown_tx().expect("failed to shutdown tx");
-    let rx_stats = xsk.shutdown_rx().expect("failed to shut down rx");
+    let tx_stats = xsk.tx.stats();
     eprintln!("tx_stats = {:?}", tx_stats);
     eprintln!("tx duration = {:?}", tx_stats.duration());
     eprintln!("tx pps = {:?}", tx_stats.pps());
-
-    eprintln!("rx_stats = {:?}", rx_stats);
 }
 
-fn generate_pkt(pkt_builder: PacketBuilderStep<UdpHeader>, n: u64) -> Vec<u8> {
-    let mut payload = vec![];
-    payload.write_u64::<LittleEndian>(n).unwrap();
-    //get some memory to store the result
-    let mut result = Vec::<u8>::with_capacity(pkt_builder.size(payload.len()));
-
-    //serialize
+fn generate_pkt(
+    mut pkt: &mut [u8],
+    payload: &mut [u8],
+    pkt_builder: PacketBuilderStep<UdpHeader>,
+) -> usize {
+    let len = pkt_builder.size(payload.len());
     pkt_builder
-        .write(&mut result, &payload)
+        .write(&mut pkt, payload)
         .expect("failed to build packet");
-    result
+    len
 }
 
 #[derive(Debug, Clone)]
@@ -203,38 +183,35 @@ impl Filter {
     }
 }
 
+const DEFAULT_TIMEOUT: u64 = 30;
+
 fn spawn_rx(mut xsk: Xsk2, opts: Opts) {
-    let rx_recv = xsk.rx_receiver().unwrap();
-
     let filter = Filter::new(&opts.src_ip, opts.src_port, &opts.dest_ip, opts.dest_port).unwrap();
+    let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+    let mut matched_recvd_pkts = 0;
+    let mut recvd_nums: HashSet<u64> = HashSet::with_capacity(opts.n_pkts as usize);
+    let start = Instant::now();
+    let timeout = match opts.timeout_sec {
+        Some(timeout) => Duration::from_secs(timeout),
+        None => Duration::from_secs(DEFAULT_TIMEOUT),
+    };
 
-    let recv_handle = thread::spawn(move || {
-        let mut recvd_nums: HashSet<u64> = HashSet::new();
-        for (pkt, len) in rx_recv.iter() {
-            match SlicedPacket::from_ethernet(&pkt[..len]) {
+    while matched_recvd_pkts != opts.n_pkts && start.elapsed() < timeout {
+        let len_recvd = xsk.rx.recv(&mut pkt[..]);
+        if len_recvd > 0 {
+            match SlicedPacket::from_ethernet(&pkt[..len_recvd]) {
                 Ok(pkt) => {
                     if filter_pkt(&pkt, &filter) {
-                        let mut rdr = Cursor::new(&pkt.payload[0..8]);
-                        let n = rdr.read_u64::<LittleEndian>().unwrap();
+                        let n = LittleEndian::read_u64(&pkt.payload[..8]);
                         recvd_nums.insert(n);
+                        matched_recvd_pkts += 1;
                     }
                 }
                 Err(e) => log::warn!("failed to parse packet {:?}", e),
             }
         }
-        recvd_nums
-    });
-
-    thread::sleep(Duration::from_secs(30));
-    let rx_stats = xsk.shutdown_rx().expect("failed to shut down rx");
-    eprintln!("rx_stats = {:?}", rx_stats);
-    eprintln!("rx duration = {:?}", rx_stats.duration());
-    eprintln!("rx pps = {:?}", rx_stats.pps());
-
-    let tx_stats = xsk.shutdown_tx().expect("failed to shut down tx");
-    eprintln!("tx_stats = {:?}", tx_stats);
-
-    let recvd_nums = recv_handle.join().expect("failed to join recv handle");
+        recvd_nums.insert(1);
+    }
 
     let expected_recvd_nums: Vec<u64> = (0..opts.n_pkts).into_iter().collect();
 
@@ -246,6 +223,11 @@ fn spawn_rx(mut xsk: Xsk2, opts: Opts) {
         }
     }
     eprintln!("missing {} packets", n_missing);
+
+    let rx_stats = xsk.rx.stats();
+    eprintln!("rx_stats = {:?}", rx_stats);
+    eprintln!("rx duration = {:?}", rx_stats.duration());
+    eprintln!("rx pps = {:?}", rx_stats.pps());
 }
 
 fn filter_pkt(parsed_pkt: &SlicedPacket, filter: &Filter) -> bool {

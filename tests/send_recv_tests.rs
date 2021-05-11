@@ -142,10 +142,6 @@ fn send_recv_test() {
                     }
                 }
                 recvd_nums.insert(1);
-
-                for b in &mut pkt[..len_recvd] {
-                    *b = 0;
-                }
             }
 
             let duration = start.elapsed();
