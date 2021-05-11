@@ -2,7 +2,6 @@
 use super::rx::*;
 use super::tx::*;
 use crate::{socket::*, umem::*};
-use std::sync::Arc;
 
 use std::error::Error;
 
@@ -86,12 +85,12 @@ impl<'a> Xsk2<'a> {
         let tx_frames = frames[..n_tx_frames].into();
         let rx_frames = frames[n_tx_frames..].into();
 
+        // TODO: Fix this
         std::mem::forget(umem);
 
         /*
         let tx_umem = Arc::new(umem);
         let rx_umem = tx_umem.clone();
-
 
         let tx = XskTx::new(tx_umem, tx_q, comp_q, tx_frames, umem_config.frame_size());
         let rx = XskRx::new(rx_umem, rx_q, fill_q, rx_frames, umem_config.frame_size());

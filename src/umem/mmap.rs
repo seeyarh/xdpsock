@@ -1,5 +1,4 @@
 use libc::{MAP_ANONYMOUS, MAP_FAILED, MAP_HUGETLB, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-use log::error;
 use std::{convert::TryInto, io, ptr, slice};
 
 #[derive(Debug, PartialEq)]
@@ -71,12 +70,10 @@ impl MmapArea {
 
 impl Drop for MmapArea {
     fn drop(&mut self) {
-        /*
         let err = unsafe { libc::munmap(self.mem_ptr, self.len) };
         if err != 0 {
-            error!("munmap() failed: {}", err);
+            log::error!("munmap() failed: {}", err);
         }
-        */
     }
 }
 

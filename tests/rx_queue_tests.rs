@@ -1,11 +1,10 @@
-/*
 mod setup;
 use libbpf_sys::XDP_PACKET_HEADROOM;
 use rusty_fork::rusty_fork_test;
 use std::{thread, time::Duration};
 use xdpsock::{
     socket::{SocketConfig, SocketConfigBuilder},
-    umem::{UmemConfig, UmemConfigBuilder},
+    umem::{Frame, UmemConfig, UmemConfigBuilder},
     xsk::Xsk,
 };
 
@@ -31,11 +30,13 @@ rusty_fork_test! {
     #[test]
     fn rx_queue_consumes_nothing_if_no_tx_and_fill_q_empty() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            assert_eq!(dev1.rx_q.consume(&mut dev1.rx_frames[..2]), 0);
+            let n_rx_frames = dev1.rx_frames.len();
+            let mut filled_frames = vec![(0, 0, 0); n_rx_frames];
+            assert_eq!(dev1.rx_q.consume(2, &mut filled_frames[..2]), 0);
 
             assert_eq!(
                 dev1.rx_q
-                    .poll_and_consume(&mut dev1.rx_frames[..2], 100)
+                    .poll_and_consume(2, &mut filled_frames[..2], 100)
                     .unwrap(),
                 0
             );
@@ -58,6 +59,9 @@ rusty_fork_test! {
     #[test]
     fn rx_queue_consume_returns_nothing_if_fill_q_empty() {
         fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
+            let n_rx_frames = dev1.rx_frames.len();
+            let mut filled_frames = vec![(0, 0, 0); n_rx_frames];
+
             assert_eq!(
                 unsafe {
                     dev2.tx_q
@@ -67,11 +71,11 @@ rusty_fork_test! {
                 4
             );
 
-            assert_eq!(dev1.rx_q.consume(&mut dev1.rx_frames[..4]), 0);
+            assert_eq!(dev1.rx_q.consume(4, &mut filled_frames[..4]), 0);
 
             assert_eq!(
                 dev1.rx_q
-                    .poll_and_consume(&mut dev1.rx_frames[..4], 100)
+                    .poll_and_consume(4, &mut filled_frames[..4], 100)
                     .unwrap(),
                 0
             );
@@ -94,8 +98,13 @@ rusty_fork_test! {
     #[test]
     fn rx_queue_consumes_frame_correctly_after_tx() {
         fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
+            let n_rx_frames = dev1.rx_frames.len();
+            let mut filled_frames = vec![(0, 0, 0); n_rx_frames];
+
             // Add a frame in the dev1 fill queue ready to receive
-            assert_eq!(unsafe { dev1.fill_q.produce(&mut dev1.rx_frames[0..1]) }, 1);
+            let mut rx_frames: Vec<&Frame> = dev1.rx_frames.iter().collect();
+
+            assert_eq!(unsafe { dev1.fill_q.produce(&mut rx_frames[0..1]) }, 1);
 
             // Data to send from dev2
             let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
@@ -117,16 +126,29 @@ rusty_fork_test! {
                 1
             );
 
-
-
             // Wait briefly so we don't try to consume too early
             thread::sleep(Duration::from_millis(5));
 
             // Read on dev1
-            let frames_consumed = dev1.rx_q.consume(&mut dev1.rx_frames[..]);
-            assert_eq!(frames_consumed, 1);
+            let n_frames_filled = dev1.rx_q.consume(1, &mut filled_frames);
+            assert_eq!(n_frames_filled, 1);
 
-            assert_eq!(dev1.rx_frames[0].len(), 5);
+            // TODO: Dry this
+            let rx_frame_offset = dev1.rx_frames[0].addr();
+            let frame_size = dev1.umem_config.frame_size();
+
+            for filled_frame in filled_frames[..n_frames_filled].iter() {
+                let rx_frame_index =
+                    (filled_frame.0 as u32 - rx_frame_offset as u32) / frame_size;
+
+                let rx_frame_addr = filled_frame.0;
+                let rx_frame_len = filled_frame.1;
+                let rx_frame_options = filled_frame.2;
+
+                dev1.rx_frames[rx_frame_index as usize].set_addr(rx_frame_addr);
+                dev1.rx_frames[rx_frame_index as usize].set_len(rx_frame_len);
+                dev1.rx_frames[rx_frame_index as usize].set_options(rx_frame_options);
+            }
 
             // Check that the data is correct
             let recvd = unsafe {
@@ -155,8 +177,12 @@ rusty_fork_test! {
     #[test]
     fn rx_queue_recvd_packet_offset_after_tx_includes_xdp_and_frame_headroom() {
         fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
+            let n_rx_frames = dev1.rx_frames.len();
+            let mut filled_frames = vec![(0, 0, 0); n_rx_frames];
+            let rx_frames: Vec<&Frame> = dev1.rx_frames.iter().collect();
+
             // Add a frame in the dev1 fill queue ready to receive
-            assert_eq!(unsafe { dev1.fill_q.produce(&mut dev1.rx_frames[0..1]) }, 1);
+            assert_eq!(unsafe { dev1.fill_q.produce(&rx_frames[..1]) }, 1);
 
             // Data to send from dev2
             let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
@@ -181,8 +207,23 @@ rusty_fork_test! {
             // Wait briefly so we don't try to consume too early
             thread::sleep(Duration::from_millis(5));
 
-            // Read on dev1
-            assert_eq!(dev1.rx_q.consume(&mut dev1.rx_frames[..]), 1);
+            let n_frames_filled = dev1.rx_q.consume(1, &mut filled_frames);
+            assert_eq!(n_frames_filled, 1);
+
+            let rx_frame_offset = dev1.rx_frames[0].addr();
+            let frame_size = dev1.umem_config.frame_size();
+            for filled_frame in filled_frames[..n_frames_filled].iter() {
+                let rx_frame_index =
+                    (filled_frame.0 as u32 - rx_frame_offset as u32) / frame_size;
+
+                let rx_frame_addr = filled_frame.0;
+                let rx_frame_len = filled_frame.1;
+                let rx_frame_options = filled_frame.2;
+
+                dev1.rx_frames[rx_frame_index as usize].set_addr(rx_frame_addr);
+                dev1.rx_frames[rx_frame_index as usize].set_len(rx_frame_len);
+                dev1.rx_frames[rx_frame_index as usize].set_options(rx_frame_options);
+            }
 
             assert_eq!(dev1.rx_frames[0].len(), 5);
 
@@ -213,4 +254,3 @@ rusty_fork_test! {
         );
     }
 }
-*/

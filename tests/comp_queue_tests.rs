@@ -1,4 +1,3 @@
-/*
 mod setup;
 use rusty_fork::rusty_fork_test;
 use std::{thread, time::Duration};
@@ -26,11 +25,13 @@ rusty_fork_test! {
 
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
             let dev1_frames = dev1.tx_frames;
+            let n_tx_frames = dev1_frames.len();
+            let mut free_frames = vec![0; n_tx_frames];
+
             eprintln!("frames[1] = {}", dev1_frames[1].addr());
 
-            let free_frames = dev1.comp_q.consume(4);
-            eprintln!("{:?}", free_frames);
-            assert_eq!(free_frames.len(), 0);
+            let n_free_frames = dev1.comp_q.consume(4, &mut free_frames);
+            assert_eq!(n_free_frames, 0);
         }
 
         let (dev1_umem_config, dev1_socket_config) = build_configs();
@@ -51,6 +52,8 @@ rusty_fork_test! {
     fn comp_queue_num_frames_consumed_match_those_produced() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
             let dev1_frames = dev1.tx_frames;
+            let n_tx_frames = dev1_frames.len();
+            let mut free_frames = vec![0; n_tx_frames];
 
             assert_eq!(
                 unsafe { dev1.tx_q.produce_and_wakeup(&dev1_frames[..2]).unwrap() },
@@ -60,9 +63,9 @@ rusty_fork_test! {
             // Wait briefly so we don't try to consume too early
             thread::sleep(Duration::from_millis(5));
 
-            let free_frames = dev1.comp_q.consume(4);
+            let n_free_frames = dev1.comp_q.consume(4, &mut free_frames);
 
-            assert_eq!(free_frames.len(), 2);
+            assert_eq!(n_free_frames, 2);
         }
 
         //thread::sleep(Duration::from_secs(5));
@@ -84,24 +87,28 @@ rusty_fork_test! {
     #[test]
     fn comp_queue_addr_of_frames_consumed_match_addr_of_those_produced() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let dev1_tx_q_frames = dev1.tx_frames;
-            let produced_addrs: Vec<u64> = dev1_tx_q_frames[2..4].iter().map(|f| f.addr() as u64).collect();
+
+            let dev1_frames = dev1.tx_frames;
+            let n_tx_frames = dev1_frames.len();
+            let mut free_frames = vec![0; n_tx_frames];
+
+            let produced_addrs: Vec<u64> = dev1_frames[2..4].iter().map(|f| f.addr() as u64).collect();
 
             unsafe {
                 dev1.tx_q
-                    .produce_and_wakeup(&dev1_tx_q_frames[2..4])
+                    .produce_and_wakeup(&dev1_frames[2..4])
                     .unwrap()
             };
 
             // Wait briefly so we don't try to consume too early
             thread::sleep(Duration::from_millis(5));
 
-            let free_frames = dev1.comp_q.consume(2);
-            eprintln!("{:?}", free_frames);
+            let n_free_frames = dev1.comp_q.consume(2, &mut free_frames);
+            assert_eq!(n_free_frames, 2);
 
             // Also ensure that the frame info matches
             assert_eq!(
-                free_frames, produced_addrs
+                free_frames[..n_free_frames as usize], produced_addrs
             );
         }
 
@@ -118,4 +125,3 @@ rusty_fork_test! {
         );
     }
 }
-*/

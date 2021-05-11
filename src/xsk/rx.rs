@@ -1,6 +1,5 @@
 //! Receive end of AF_XDP socket
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::{socket::*, umem::*};
@@ -102,7 +101,7 @@ impl<'a> XskRx<'a> {
 
         if n_frames_recv == 0 {
             // No frames consumed, wake up fill queue if required
-            //log::debug!("rx: rx_q.poll_and_consume() consumed 0 frames");
+            log::debug!("rx: rx_q.poll_and_consume() consumed 0 frames");
             if self.fill_q.needs_wakeup() {
                 log::debug!("waking up fill_q");
                 self.fill_q
@@ -129,7 +128,7 @@ impl<'a> XskRx<'a> {
                         .expect("rx: failed to read from umem")
                 };
 
-                //log::debug!("rx_data: len = {} = {:?}", frame.len(), data);
+                log::debug!("rx_data: len = {} = {:?}", frame.len(), data);
                 let len = frame.len();
                 pkt_receiver[..len].copy_from_slice(data);
 
@@ -141,10 +140,10 @@ impl<'a> XskRx<'a> {
                 } != 1
                 {
                     // Loop until frames added to the fill ring.
-                    //log::debug!("rx: fill_q.produce_and_wakeup() failed to allocate");
+                    log::debug!("rx: fill_q.produce_and_wakeup() failed to allocate");
                 }
 
-                //log::debug!("rx: fill_q.produce_and_wakeup() submitted {} frames", 1);
+                log::debug!("rx: fill_q.produce_and_wakeup() submitted {} frames", 1);
 
                 self.stats.pkts_rx_delivered += 1;
                 self.rx_frames[self.rx_cursor].status = FrameStatus::Free;
@@ -159,21 +158,19 @@ impl<'a> XskRx<'a> {
     fn update_rx_frames(&mut self, n_frames_recv: usize) {
         let filled_frames = &self.filled_frames[..n_frames_recv];
         for filled_frame in filled_frames {
-            //log::debug!("filled_frame = {:?}", filled_frame);
+            log::debug!("filled_frame = {:?}", filled_frame);
             let rx_frame_index =
                 ((*filled_frame).0 as u32 - self.rx_frame_offset as u32) / self.frame_size;
             let rx_frame_addr = (*filled_frame).0;
             let rx_frame_len = (*filled_frame).1;
             let rx_frame_options = (*filled_frame).2;
 
-            /*
             log::debug!(
                 "update rx_frame, rx_frame_index = {} rx_frame_len = {}, rx_frame_options = {}",
                 rx_frame_index,
                 rx_frame_len,
                 rx_frame_options,
             );
-            */
             self.rx_frames[rx_frame_index as usize].set_addr(rx_frame_addr);
             self.rx_frames[rx_frame_index as usize].set_len(rx_frame_len);
             self.rx_frames[rx_frame_index as usize].set_options(rx_frame_options);

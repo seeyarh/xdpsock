@@ -255,8 +255,13 @@ unsafe impl Send for XskUmem {}
 
 impl Drop for XskUmem {
     fn drop(&mut self) {
-        log::debug!("umem: dropping umem");
         let err = unsafe { libbpf_sys::xsk_umem__delete(self.0) };
+        log::debug!("drop_umem: dropping umem err = {}", err);
+
+        log::debug!(
+            "drop_umem: dropping umem err = {}",
+            std::io::Error::from_raw_os_error(err)
+        );
 
         if err != 0 {
             log::error!("xsk_umem__delete({:?}) failed: {}", self.0, errno());

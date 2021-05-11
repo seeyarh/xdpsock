@@ -1,9 +1,8 @@
-/*
 mod setup;
 use rusty_fork::rusty_fork_test;
 use xdpsock::{
     socket::SocketConfig,
-    umem::{UmemConfig, UmemConfigBuilder},
+    umem::{Frame, UmemConfig, UmemConfigBuilder},
     xsk::Xsk,
 };
 
@@ -21,7 +20,7 @@ rusty_fork_test! {
     #[test]
     fn fill_queue_produce_tx_size_frames() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let mut frame_descs = dev1.rx_frames;
+            let mut frame_descs: Vec<&Frame> = dev1.rx_frames.iter().collect();
             assert_eq!(unsafe { dev1.fill_q.produce(&mut frame_descs[..4]) }, 4);
         }
 
@@ -41,7 +40,7 @@ rusty_fork_test! {
     #[test]
     fn fill_queue_produce_gt_tx_size_frames() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let mut frame_descs = dev1.rx_frames;
+            let mut frame_descs: Vec<&Frame> = dev1.rx_frames.iter().collect();
 
             assert_eq!(unsafe { dev1.fill_q.produce(&mut frame_descs[..5]) }, 0);
         }
@@ -63,7 +62,7 @@ rusty_fork_test! {
     #[test]
     fn fill_queue_produce_frames_until_full() {
         fn test_fn(mut dev1: Xsk, _dev2: Xsk) {
-            let mut frame_descs = dev1.rx_frames;
+            let mut frame_descs: Vec<&Frame> = dev1.rx_frames.iter().collect();
 
             assert_eq!(unsafe { dev1.fill_q.produce(&mut frame_descs[..2]) }, 2);
             assert_eq!(unsafe { dev1.fill_q.produce(&mut frame_descs[2..3]) }, 1);
@@ -83,4 +82,3 @@ rusty_fork_test! {
         )
     }
 }
-*/
