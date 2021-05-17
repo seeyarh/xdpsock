@@ -76,6 +76,7 @@ fn main() {
         umem_config,
         socket_config,
         n_tx_frames as usize,
+        1,
     )
     .expect("failed to build xsk");
 

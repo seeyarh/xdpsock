@@ -1,6 +1,6 @@
-use std::collections::HashSet;
 use std::error::Error;
 use std::net::Ipv4Addr;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use byteorder::{ByteOrder, LittleEndian};
@@ -10,8 +10,8 @@ use etherparse::{
 };
 
 use xdpsock::{
-    socket::{BindFlags, SocketConfigBuilder, XdpFlags},
-    umem::UmemConfigBuilder,
+    socket::{BindFlags, SocketConfig, SocketConfigBuilder, XdpFlags},
+    umem::{UmemConfig, UmemConfigBuilder},
     xsk::{Xsk2, MAX_PACKET_SIZE},
 };
 
@@ -19,6 +19,18 @@ use xdpsock::{
 enum Mode {
     Tx,
     Rx,
+}
+
+#[derive(Clap, Debug, Clone)]
+enum BindOption {
+    Copy,
+    ZeroCopy,
+}
+
+#[derive(Clap, Debug, Clone)]
+enum SocketOption {
+    Drv,
+    Skb,
 }
 
 /// Send or Receive UDP packets on the specified interface
@@ -65,79 +77,180 @@ struct Opts {
     #[clap(short, long)]
     n_pkts: u64,
 
+    /// Which TX/RX queue to use
+    #[clap(short, long)]
+    queues: Vec<u32>,
+
+    /// Copy or ZeroCopy
+    #[clap(long, arg_enum, default_value = "copy")]
+    bind_option: BindOption,
+
+    /// Copy or ZeroCopy
+    #[clap(long, arg_enum, default_value = "skb")]
+    socket_option: SocketOption,
+
     /// Number of seconds before the sender/receiver will timeout
     #[clap(short, long)]
     timeout_sec: Option<u64>,
+
+    /// Number of frames
+    #[clap(short, long, default_value = "8192")]
+    xdp_queue_size: u32,
+
+    /// Tx batch size
+    #[clap(short, long, default_value = "1")]
+    batch_size: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Filter {
+    src_mac: [u8; 6],
+    dest_mac: [u8; 6],
+    src_ip: [u8; 4],
+    src_port: u16,
+    dest_ip: [u8; 4],
+    dest_port: u16,
+}
+
+impl Filter {
+    fn from_opts(opts: &Opts) -> Result<Self, Box<dyn Error>> {
+        let src_mac = parse_mac(&opts.src_mac)?;
+        let dest_mac = parse_mac(&opts.dest_mac)?;
+        let src_ipv4: Ipv4Addr = opts.src_ip.parse()?;
+        let dest_ipv4: Ipv4Addr = opts.dest_ip.parse()?;
+
+        Ok(Self {
+            src_mac,
+            dest_mac,
+            src_ip: src_ipv4.octets(),
+            src_port: opts.src_port,
+            dest_ip: dest_ipv4.octets(),
+            dest_port: opts.dest_port,
+        })
+    }
 }
 
 fn main() {
     env_logger::init();
     let opts: Opts = Opts::parse();
+    eprintln!("{:?}", opts);
+
+    spawn_threads(opts);
+}
+
+/// Build umem and socket configs based on opts
+fn build_umem_socket_config(opts: &Opts) -> (UmemConfig, SocketConfig) {
+    let n = opts.xdp_queue_size;
 
     let umem_config = UmemConfigBuilder::new()
-        .frame_count(8192)
-        .comp_queue_size(4096)
-        .fill_queue_size(4096)
+        .frame_count(n)
+        .comp_queue_size(n / 2)
+        .fill_queue_size(n / 2)
         .build()
         .unwrap();
 
-    let socket_config = SocketConfigBuilder::new()
-        .tx_queue_size(4096)
-        .rx_queue_size(4096)
-        .bind_flags(BindFlags::XDP_COPY)
-        .xdp_flags(XdpFlags::XDP_FLAGS_SKB_MODE)
-        .build()
-        .unwrap();
+    let mut socket_config_init = SocketConfigBuilder::new()
+        .tx_queue_size(n / 2)
+        .rx_queue_size(n / 2)
+        .clone();
 
+    let socket_config_bind = match opts.bind_option {
+        BindOption::ZeroCopy => socket_config_init.bind_flags(BindFlags::XDP_ZEROCOPY),
+        BindOption::Copy => socket_config_init.bind_flags(BindFlags::XDP_COPY),
+    };
+
+    let socket_config_sk = match opts.socket_option {
+        SocketOption::Drv => socket_config_bind.xdp_flags(XdpFlags::XDP_FLAGS_DRV_MODE),
+        SocketOption::Skb => socket_config_bind.xdp_flags(XdpFlags::XDP_FLAGS_SKB_MODE),
+    };
+
+    let socket_config = socket_config_sk.build().unwrap();
+    (umem_config, socket_config)
+}
+
+/// Build an Xsk for a given queue
+fn build_xsk(
+    umem_config: UmemConfig,
+    socket_config: SocketConfig,
+    ifname: &str,
+    queue: u32,
+    tx_batch_size: usize,
+) -> Xsk2 {
     let n_tx_frames = umem_config.frame_count() / 2;
-
-    let dev_ifname = opts.dev.clone();
     let xsk = Xsk2::new(
-        &dev_ifname,
-        0,
+        ifname,
+        queue,
         umem_config,
         socket_config,
         n_tx_frames as usize,
+        tx_batch_size,
     )
     .expect("failed to build xsk");
-
-    match opts.mode {
-        Mode::Tx => spawn_tx(xsk, opts),
-        Mode::Rx => spawn_rx(xsk, opts),
-    }
+    xsk
 }
 
-fn spawn_tx(mut xsk: Xsk2, opts: Opts) {
-    eprintln!("sending {} pkts", opts.n_pkts);
+fn spawn_threads(opts: Opts) {
+    let mut handles = vec![];
+    let n_queues = opts.queues.len();
+    let queues = opts.queues.clone();
 
-    let src_mac = parse_mac(&opts.src_mac).expect("failed to parse src mac addr");
-    let dest_mac = parse_mac(&opts.dest_mac).expect("failed to parse dest mac addr");
-    let filter = Filter::new(&opts.src_ip, opts.src_port, &opts.dest_ip, opts.dest_port).unwrap();
+    let start = Instant::now();
+    for (i, queue) in queues.into_iter().enumerate() {
+        let (umem_config, socket_config) = build_umem_socket_config(&opts);
+        let ifname = opts.dev.clone();
+        let opts = opts.clone();
 
+        let handle = thread::spawn(move || {
+            let xsk = build_xsk(umem_config, socket_config, &ifname, queue, opts.batch_size);
+            let filter = Filter::from_opts(&opts).expect("failed to build packet filter");
+
+            let pkts = split_pkts(opts.n_pkts, i as u64, n_queues as u64);
+            match opts.mode {
+                Mode::Tx => tx_pkts(xsk, filter, pkts),
+                Mode::Rx => rx_pkts(xsk, filter, opts.n_pkts, opts.timeout_sec),
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("failed to join tx/rx handle");
+    }
+
+    let end = start.elapsed();
+    let duration_secs = end.as_secs_f64();
+    let pps = opts.n_pkts as f64 / duration_secs;
+    eprintln!(
+        "sent {} pkts in {} seconds, {} pps",
+        opts.n_pkts, duration_secs, pps
+    );
+}
+
+fn split_pkts(n_pkts: u64, queue_index: u64, n_queues: u64) -> impl Iterator<Item = u64> {
+    (0..n_pkts)
+        .into_iter()
+        .filter(move |i| i % n_queues == queue_index)
+}
+
+fn tx_pkts(mut xsk: Xsk2, filter: Filter, pkts: impl Iterator<Item = u64>) {
     let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
     let mut payload: [u8; 8] = [0; 8];
 
-    let start = Instant::now();
-    let timeout = match opts.timeout_sec {
-        Some(timeout) => Duration::from_secs(timeout),
-        None => Duration::from_secs(DEFAULT_TIMEOUT),
-    };
+    let pkt_builder = PacketBuilder::ethernet2(filter.src_mac, filter.dest_mac)
+        .ipv4(filter.src_ip, filter.dest_ip, 20)
+        .udp(filter.src_port, filter.dest_port);
+    let len_pkt = generate_pkt(&mut pkt[..], &mut payload[..], pkt_builder);
 
-    for i in 0..opts.n_pkts {
-        if start.elapsed() > timeout {
-            break;
-        }
-        //thread::sleep(Duration::from_millis(1));
-        let pkt_builder = PacketBuilder::ethernet2(src_mac, dest_mac)
-            .ipv4(filter.src_ip, filter.dest_ip, 20)
-            .udp(filter.src_port, filter.dest_port);
-
+    for i in pkts {
+        log::debug!("tx_pkts: sending {}", i);
+        let mut payload = &mut pkt[len_pkt - 8..len_pkt];
         LittleEndian::write_u64(&mut payload, i);
-        let len_pkt = generate_pkt(&mut pkt[..], &mut payload[..], pkt_builder);
-
+        drop(payload);
         while let Err(_) = xsk.tx.send(&pkt[..len_pkt]) {}
     }
 
+    xsk.tx.drain();
     let tx_stats = xsk.tx.stats();
     eprintln!("tx_stats = {:?}", tx_stats);
     eprintln!("tx duration = {:?}", tx_stats.duration());
@@ -156,69 +269,49 @@ fn generate_pkt(
     len
 }
 
-#[derive(Debug, Clone)]
-struct Filter {
-    src_ip: [u8; 4],
-    src_port: u16,
-    dest_ip: [u8; 4],
-    dest_port: u16,
-}
-
-impl Filter {
-    fn new(
-        src_ip: &str,
-        src_port: u16,
-        dest_ip: &str,
-        dest_port: u16,
-    ) -> Result<Self, Box<dyn Error>> {
-        let src_ipv4: Ipv4Addr = src_ip.parse()?;
-        let dest_ipv4: Ipv4Addr = dest_ip.parse()?;
-
-        Ok(Self {
-            src_ip: src_ipv4.octets(),
-            src_port,
-            dest_ip: dest_ipv4.octets(),
-            dest_port,
-        })
-    }
-}
-
 const DEFAULT_TIMEOUT: u64 = 30;
 
-fn spawn_rx(mut xsk: Xsk2, opts: Opts) {
-    let filter = Filter::new(&opts.src_ip, opts.src_port, &opts.dest_ip, opts.dest_port).unwrap();
+fn rx_pkts(mut xsk: Xsk2, filter: Filter, n_pkts: u64, timeout_sec: Option<u64>) {
     let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
     let mut matched_recvd_pkts = 0;
-    let mut recvd_nums: HashSet<u64> = HashSet::with_capacity(opts.n_pkts as usize);
+    //let mut recvd_nums: HashSet<u64> = HashSet::with_capacity(n_pkts as usize);
+    let mut recvd_nums = vec![false; n_pkts as usize];
     let start = Instant::now();
-    let timeout = match opts.timeout_sec {
+
+    let timeout = match timeout_sec {
         Some(timeout) => Duration::from_secs(timeout),
         None => Duration::from_secs(DEFAULT_TIMEOUT),
     };
 
-    while matched_recvd_pkts != opts.n_pkts && start.elapsed() < timeout {
+    let mut i = 0;
+
+    while matched_recvd_pkts != n_pkts {
+        i += 1;
+        if i % 65_536 == 0 {
+            if start.elapsed() > timeout {
+                break;
+            }
+        }
+
         let len_recvd = xsk.rx.recv(&mut pkt[..]);
         if len_recvd > 0 {
             match SlicedPacket::from_ethernet(&pkt[..len_recvd]) {
                 Ok(pkt) => {
                     if filter_pkt(&pkt, &filter) {
                         let n = LittleEndian::read_u64(&pkt.payload[..8]);
-                        recvd_nums.insert(n);
+                        recvd_nums[n as usize] = true;
                         matched_recvd_pkts += 1;
                     }
                 }
                 Err(e) => log::warn!("failed to parse packet {:?}", e),
             }
         }
-        recvd_nums.insert(1);
     }
 
-    let expected_recvd_nums: Vec<u64> = (0..opts.n_pkts).into_iter().collect();
-
     let mut n_missing = 0;
-    for n in expected_recvd_nums.iter() {
-        if !recvd_nums.contains(n) {
-            //eprintln!("missing {}", n);
+    for (i, recvd) in recvd_nums.iter().enumerate() {
+        if !recvd {
+            log::debug!("missing {}", i);
             n_missing += 1;
         }
     }

@@ -169,6 +169,8 @@ fn send_recv_test() {
 
                 while let Err(_) = dev2.tx.send(&pkt[..len_pkt]) {}
             }
+
+            dev2.tx.drain();
             send_done.store(true, Ordering::Relaxed);
             let duration = start.elapsed();
             eprintln!("send time is: {:?}", duration);

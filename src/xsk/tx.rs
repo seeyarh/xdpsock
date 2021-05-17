@@ -64,6 +64,7 @@ pub struct XskTx<'a> {
     pub frame_size: u32,
     pub stats: TxStats,
     pub batch_size: usize,
+    pub cur_batch_size: usize,
 }
 
 impl<'a> XskTx<'a> {
@@ -73,6 +74,7 @@ impl<'a> XskTx<'a> {
         comp_q: CompQueue<'a>,
         tx_frames: Vec<Frame<'a>>,
         frame_size: u32,
+        batch_size: usize,
     ) -> Self {
         let n_tx_frames = tx_frames.len();
         Self {
@@ -86,12 +88,88 @@ impl<'a> XskTx<'a> {
             tx_cursor: 0,
             frame_size,
             stats: TxStats::new(),
-            batch_size: 1,
+            // TODO: Add integration tests to make sure this is working
+            batch_size,
+            cur_batch_size: 0,
         }
     }
 
     pub fn send(&mut self, data: &[u8]) -> Result<(), XskSendError> {
         log::debug!("tx: tx_cursor = {}", self.tx_cursor);
+
+        self.complete_frames();
+
+        if !self.tx_frames[self.tx_cursor].status.is_free() {
+            return Err(XskSendError::NoFreeTxFrames);
+        }
+
+        unsafe {
+            self.tx_frames[self.tx_cursor]
+                .write_to_umem_checked(data)
+                .expect("failed to write to umem");
+        }
+
+        self.tx_cursor = (self.tx_cursor + 1) % self.tx_frames.len();
+        self.cur_batch_size += 1;
+
+        log::debug!(
+            "tx: cur_batch_size = {}, batch_size = {}",
+            self.cur_batch_size,
+            self.batch_size
+        );
+
+        // Add consumed frames back to the tx queue
+        if self.cur_batch_size == self.batch_size {
+            self.put_batch_on_tx_queue();
+        }
+
+        Ok(())
+    }
+
+    fn put_batch_on_tx_queue(&mut self) {
+        log::debug!(
+            "tx: putting batch on queue: batch_size = {}, tx_cursor = {}",
+            self.batch_size,
+            self.tx_cursor
+        );
+        if self.cur_batch_size == 0 {
+            return;
+        }
+
+        let mut start = self.tx_cursor - self.cur_batch_size;
+        let mut end = self.tx_cursor;
+        if self.tx_cursor == 0 {
+            start = self.tx_frames.len() - self.cur_batch_size;
+            end = self.tx_frames.len();
+        }
+        log::debug!("tx: adding tx_frames[{}..{}] to tx queue", start, end);
+
+        for frame in self.tx_frames[start..end].iter_mut() {
+            frame.status = FrameStatus::OnTxQueue;
+        }
+
+        while unsafe {
+            self.tx_q
+                .produce_and_wakeup(&self.tx_frames[start..end])
+                .expect("failed to add frames to tx queue")
+        } != self.cur_batch_size
+        {
+            // Loop until frames added to the tx ring.
+            log::debug!(
+                "tx_q.produce_and_wakeup() failed to allocate {} frame",
+                self.cur_batch_size
+            );
+        }
+        log::debug!("tx_q.produce_and_wakeup() submitted {} frames", 1);
+
+        self.stats.pkts_tx += self.cur_batch_size as u64;
+        self.outstanding_tx_frames += self.cur_batch_size as u64;
+        self.cur_batch_size = 0;
+    }
+
+    /// Read frames from completion queue
+    fn complete_frames(&mut self) -> u64 {
+        log::debug!("tx: reading from completion queue");
         let n_free_frames = self
             .comp_q
             .consume(self.outstanding_tx_frames, &mut self.free_frames);
@@ -107,47 +185,21 @@ impl<'a> XskTx<'a> {
                 log::debug!("tx: woke up tx_q");
             }
         }
-        log::debug!("dev2.comp_q.consume() consumed {} frames", n_free_frames);
+        log::debug!("tx: comp_q.consume() consumed {} frames", n_free_frames);
 
         self.update_tx_frames(n_free_frames as usize);
+        n_free_frames
+    }
 
-        if !self.tx_frames[self.tx_cursor].status.is_free() {
-            return Err(XskSendError::NoFreeTxFrames);
-        }
-
-        log::debug!("tx_data = {:?}", data);
-        unsafe {
-            self.tx_frames[self.tx_cursor]
-                .write_to_umem_checked(data)
-                .expect("failed to write to umem");
-        }
-
-        // Add consumed frames back to the tx queue
-        if ((self.tx_cursor + 1) % self.batch_size) == 0 {
-            let start = self.tx_cursor + 1 - self.batch_size;
-            let end = self.tx_cursor + 1;
-            log::debug!("tx: adding tx_frames[{}..{}] to tx queue", start, end);
-
-            for frame in self.tx_frames[start..end].iter_mut() {
-                frame.status = FrameStatus::OnTxQueue;
+    /// Wait until all outstanding tx packets have come back on the comp queue
+    pub fn drain(&mut self) {
+        loop {
+            self.complete_frames();
+            self.put_batch_on_tx_queue();
+            if self.outstanding_tx_frames == 0 {
+                break;
             }
-
-            while unsafe {
-                self.tx_q
-                    .produce_and_wakeup(&self.tx_frames[start..end])
-                    .expect("failed to add frames to tx queue")
-            } != self.batch_size
-            {
-                // Loop until frames added to the tx ring.
-                log::debug!("tx_q.produce_and_wakeup() failed to allocate");
-            }
-            log::debug!("tx_q.produce_and_wakeup() submitted {} frames", 1);
         }
-
-        self.stats.pkts_tx += 1;
-        self.outstanding_tx_frames += 1;
-        self.tx_cursor = (self.tx_cursor + 1) % self.tx_frames.len();
-        Ok(())
     }
 
     fn update_tx_frames(&mut self, n_free_frames: usize) {

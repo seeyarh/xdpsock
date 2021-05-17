@@ -70,6 +70,7 @@ impl<'a> Xsk2<'a> {
         umem_config: UmemConfig,
         socket_config: SocketConfig,
         n_tx_frames: usize,
+        tx_batch_size: usize,
     ) -> Result<Xsk2<'a>, Box<dyn Error>> {
         let (mut umem, fill_q, comp_q, frames) = Umem::builder(umem_config.clone())
             .create_mmap()
@@ -96,7 +97,13 @@ impl<'a> Xsk2<'a> {
         let rx = XskRx::new(rx_umem, rx_q, fill_q, rx_frames, umem_config.frame_size());
         */
 
-        let tx = XskTx::new(tx_q, comp_q, tx_frames, umem_config.frame_size());
+        let tx = XskTx::new(
+            tx_q,
+            comp_q,
+            tx_frames,
+            umem_config.frame_size(),
+            tx_batch_size,
+        );
         let rx = XskRx::new(rx_q, fill_q, rx_frames, umem_config.frame_size());
 
         Ok(Xsk2 { tx, rx })
