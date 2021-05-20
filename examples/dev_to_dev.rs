@@ -78,7 +78,7 @@ struct Opts {
     n_pkts: u64,
 
     /// Which TX/RX queue to use
-    #[clap(short, long)]
+    #[clap(short, long, default_value = "0")]
     queues: Vec<u32>,
 
     /// Copy or ZeroCopy

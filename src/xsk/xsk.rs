@@ -57,13 +57,33 @@ impl<'a> Xsk<'a> {
 }
 /// AF_XDP socket
 pub struct Xsk2<'a> {
+    pub if_name: String,
     pub tx: XskTx<'a>,
     pub rx: XskRx<'a>,
+}
+
+pub struct Xsk2Config {
+    pub if_name: String,
+    pub queue_id: u32,
+    pub n_tx_frames: usize,
+    pub tx_batch_size: usize,
+    pub umem_config: UmemConfig,
+    pub socket_config: SocketConfig,
 }
 
 unsafe impl<'a> Send for Xsk2<'a> {}
 
 impl<'a> Xsk2<'a> {
+    pub fn from_config(config: Xsk2Config) -> Result<Xsk2<'a>, Box<dyn Error>> {
+        Self::new(
+            &config.if_name,
+            config.queue_id,
+            config.umem_config,
+            config.socket_config,
+            config.n_tx_frames,
+            config.tx_batch_size,
+        )
+    }
     pub fn new(
         if_name: &str,
         queue_id: u32,
@@ -72,6 +92,10 @@ impl<'a> Xsk2<'a> {
         n_tx_frames: usize,
         tx_batch_size: usize,
     ) -> Result<Xsk2<'a>, Box<dyn Error>> {
+        if socket_config.tx_queue_size() < tx_batch_size as u32 {
+            return Err("tx batch size too large".into());
+        }
+
         let (mut umem, fill_q, comp_q, frames) = Umem::builder(umem_config.clone())
             .create_mmap()
             .expect("failed to create mmap area")
@@ -106,6 +130,10 @@ impl<'a> Xsk2<'a> {
         );
         let rx = XskRx::new(rx_q, fill_q, rx_frames, umem_config.frame_size());
 
-        Ok(Xsk2 { tx, rx })
+        Ok(Xsk2 {
+            if_name: if_name.into(),
+            tx,
+            rx,
+        })
     }
 }

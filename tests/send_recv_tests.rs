@@ -13,26 +13,34 @@ use etherparse::{
 };
 
 use xdpsock::{
-    socket::{SocketConfig, SocketConfigBuilder},
-    umem::{UmemConfig, UmemConfigBuilder},
-    xsk::{Xsk2, MAX_PACKET_SIZE},
+    socket::SocketConfigBuilder,
+    umem::UmemConfigBuilder,
+    xsk::{Xsk2, Xsk2Config, MAX_PACKET_SIZE},
 };
 
-fn build_configs() -> (Option<UmemConfig>, Option<SocketConfig>) {
+fn build_configs() -> Xsk2Config {
+    let n = 8192;
     let umem_config = UmemConfigBuilder::new()
-        .frame_count(8192)
-        .comp_queue_size(4096)
-        .fill_queue_size(4096)
+        .frame_count(n)
+        .comp_queue_size(n / 2)
+        .fill_queue_size(n / 2)
         .build()
         .unwrap();
 
     let socket_config = SocketConfigBuilder::new()
-        .tx_queue_size(4096)
-        .rx_queue_size(4096)
+        .tx_queue_size(n / 2)
+        .rx_queue_size(n / 2)
         .build()
         .unwrap();
 
-    (Some(umem_config), Some(socket_config))
+    Xsk2Config {
+        if_name: "".into(),
+        queue_id: 0,
+        n_tx_frames: (n / 2) as usize,
+        tx_batch_size: 4096,
+        umem_config,
+        socket_config,
+    }
 }
 
 fn generate_pkt(
@@ -99,7 +107,9 @@ fn filter_pkt(parsed_pkt: &SlicedPacket, filter: &Filter) -> bool {
 #[test]
 fn send_recv_test() {
     fn test_fn(mut dev1: Xsk2<'static>, mut dev2: Xsk2<'static>) {
-        let pkts_to_send = 1_000_000 as u64;
+        eprintln!("{}", dev1.if_name);
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        let pkts_to_send = 10_000_000 as u64;
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
@@ -203,16 +213,12 @@ fn send_recv_test() {
             }
         }
         assert_eq!(n_missing, 0);
+
+        std::thread::sleep(std::time::Duration::from_secs(10));
     }
 
-    let (dev1_umem_config, dev1_socket_config) = build_configs();
-    let (dev2_umem_config, dev2_socket_config) = build_configs();
+    let dev1_xsk_config = build_configs();
+    let dev2_xsk_config = build_configs();
 
-    setup::run_test_2(
-        dev1_umem_config,
-        dev1_socket_config,
-        dev2_umem_config,
-        dev2_socket_config,
-        test_fn,
-    );
+    setup::run_test_2(dev1_xsk_config, dev2_xsk_config, test_fn);
 }
