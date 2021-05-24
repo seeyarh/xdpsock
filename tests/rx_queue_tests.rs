@@ -1,3 +1,4 @@
+/*
 mod setup;
 use libbpf_sys::XDP_PACKET_HEADROOM;
 use rusty_fork::rusty_fork_test;
@@ -254,3 +255,4 @@ rusty_fork_test! {
         );
     }
 }
+*/

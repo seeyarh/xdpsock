@@ -41,6 +41,7 @@ pub struct XskRx<'a> {
     pub rx_q: RxQueue<'a>,
     pub rx_frames: Vec<Frame<'a>>,
     pub filled_frames: Vec<(usize, usize, u32)>,
+    pub processed_frames: Vec<Frame<'a>>,
     pub rx_frame_offset: usize,
     pub n_frames_to_be_filled: u64,
     pub frame_size: u32,
@@ -54,20 +55,14 @@ impl<'a> XskRx<'a> {
         //umem: Arc<Umem<'a>>,
         rx_q: RxQueue<'a>,
         mut fill_q: FillQueue<'a>,
-        rx_frames: Vec<Frame<'a>>,
+        mut rx_frames: Vec<Frame<'a>>,
         frame_size: u32,
     ) -> Self {
         let n_rx_frames = rx_frames.len();
 
-        let mut init_rx_frames: Vec<&Frame> = rx_frames.iter().collect();
-        let rx_frame_offset = init_rx_frames[0].addr();
-        log::debug!("init_rx_frames[0] = {:?}", init_rx_frames[0]);
-        log::debug!(
-            "init_rx_frames[-1] = {:?}",
-            init_rx_frames[init_rx_frames.len() - 1]
-        );
+        let rx_frame_offset = rx_frames[0].addr();
 
-        let frames_filled = unsafe { fill_q.produce(&mut init_rx_frames[..]) };
+        let frames_filled = unsafe { fill_q.produce(&mut rx_frames[..]) };
         log::debug!("rx: init frames added to fill_q: {}", frames_filled);
         Self {
             //_umem: umem,
@@ -75,6 +70,7 @@ impl<'a> XskRx<'a> {
             fill_q,
             rx_frames,
             filled_frames: vec![(0, 0, 0); n_rx_frames],
+            processed_frames: Vec::with_capacity(n_rx_frames),
             rx_frame_offset,
             n_frames_to_be_filled: n_rx_frames as u64,
             frame_size,
@@ -135,7 +131,11 @@ impl<'a> XskRx<'a> {
                 // Add frames back to fill queue
                 while unsafe {
                     self.fill_q
-                        .produce_and_wakeup(&mut [frame], self.rx_q.fd(), self.poll_ms_timeout)
+                        .produce_and_wakeup(
+                            &mut self.rx_frames[self.rx_cursor..self.rx_cursor + 1],
+                            self.rx_q.fd(),
+                            self.poll_ms_timeout,
+                        )
                         .unwrap()
                 } != 1
                 {
@@ -153,6 +153,111 @@ impl<'a> XskRx<'a> {
             }
             _ => return 0,
         }
+    }
+
+    pub fn recv_apply<F>(&mut self, f: F)
+    where
+        F: FnMut(&[u8]),
+    {
+        // check for rx packets
+        let n_frames_recv = self
+            .rx_q
+            .poll_and_consume(
+                self.n_frames_to_be_filled,
+                &mut self.filled_frames[..],
+                self.poll_ms_timeout,
+            )
+            .unwrap();
+
+        self.stats.pkts_rx += n_frames_recv as u64;
+
+        self.n_frames_to_be_filled -= n_frames_recv as u64;
+
+        if n_frames_recv == 0 {
+            // No frames consumed, wake up fill queue if required
+            log::debug!("rx: rx_q.poll_and_consume() consumed 0 frames");
+            if self.fill_q.needs_wakeup() {
+                log::debug!("waking up fill_q");
+                self.fill_q
+                    .wakeup(self.rx_q.fd(), self.poll_ms_timeout)
+                    .unwrap();
+            }
+        }
+
+        // frames consumed
+        log::debug!(
+            "rx: rx_q.poll_and_consume() consumed {} frames",
+            &n_frames_recv
+        );
+
+        if n_frames_recv > 0 {
+            self.apply_batch(n_frames_recv, f);
+        }
+    }
+
+    fn apply_batch<F>(&mut self, n_frames_recv: usize, mut f: F)
+    where
+        F: FnMut(&[u8]),
+    {
+        log::debug!("rx_apply_batch: {}", n_frames_recv);
+        let filled_frames = &self.filled_frames[..n_frames_recv];
+
+        for filled_frame in filled_frames {
+            log::debug!("filled_frame = {:?}", filled_frame);
+            let rx_frame_index =
+                ((*filled_frame).0 as u32 - self.rx_frame_offset as u32) / self.frame_size;
+            let rx_frame_addr = (*filled_frame).0;
+            let rx_frame_len = (*filled_frame).1;
+            let rx_frame_options = (*filled_frame).2;
+
+            log::debug!(
+                "update rx_frame, rx_frame_index = {} rx_frame_len = {}, rx_frame_options = {}",
+                rx_frame_index,
+                rx_frame_len,
+                rx_frame_options,
+            );
+            self.rx_frames[rx_frame_index as usize].set_addr(rx_frame_addr);
+            self.rx_frames[rx_frame_index as usize].set_len(rx_frame_len);
+            self.rx_frames[rx_frame_index as usize].set_options(rx_frame_options);
+
+            let frame = &self.rx_frames[rx_frame_index as usize];
+            let data = unsafe {
+                frame
+                    .read_from_umem_checked(frame.len())
+                    .expect("rx: failed to read from umem")
+            };
+
+            // apply user function to data
+            f(data);
+            self.processed_frames
+                .push(self.rx_frames[rx_frame_index as usize].clone());
+        }
+
+        loop {
+            let n_submitted = unsafe {
+                self.fill_q
+                    .produce_and_wakeup(
+                        &self.processed_frames[..],
+                        self.rx_q.fd(),
+                        self.poll_ms_timeout,
+                    )
+                    .unwrap()
+            };
+            log::debug!("rx_fill_q.produce_and_wakeup() allocated {}", n_submitted);
+
+            if n_submitted == self.processed_frames.len() {
+                break;
+            } else {
+                log::debug!(
+                    "rx_fill_q.produce_and_wakeup() allocated {}, wanted {}",
+                    n_submitted,
+                    self.processed_frames.len()
+                );
+            }
+        }
+        self.processed_frames.clear();
+        self.stats.pkts_rx_delivered += n_frames_recv as u64;
+        self.n_frames_to_be_filled += n_frames_recv as u64;
     }
 
     fn update_rx_frames(&mut self, n_frames_recv: usize) {

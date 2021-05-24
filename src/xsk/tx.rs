@@ -84,7 +84,7 @@ impl<'a> XskTx<'a> {
             tx_frames,
             free_frames: vec![0; n_tx_frames],
             outstanding_tx_frames: 0,
-            tx_poll_ms_timeout: 1,
+            tx_poll_ms_timeout: 0,
             tx_cursor: 0,
             frame_size,
             stats: TxStats::new(),

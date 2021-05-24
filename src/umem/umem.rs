@@ -448,7 +448,7 @@ impl FillQueue<'_> {
     /// to the constraint mentioned in the above paragraph, this
     /// should always be the length of `descs` or `0`.
     #[inline]
-    pub unsafe fn produce(&mut self, descs: &[&Frame]) -> usize {
+    pub unsafe fn produce(&mut self, descs: &[Frame]) -> usize {
         // usize <-> u64 'as' conversions are ok as the crate's top
         // level conditional compilation flags (see lib.rs) guarantee
         // that size_of<usize> = size_of<u64>
@@ -487,7 +487,7 @@ impl FillQueue<'_> {
     #[inline]
     pub unsafe fn produce_and_wakeup(
         &mut self,
-        descs: &[&Frame],
+        descs: &[Frame],
         socket_fd: &mut Fd,
         poll_timeout: i32,
     ) -> io::Result<usize> {
