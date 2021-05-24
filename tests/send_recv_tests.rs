@@ -236,27 +236,26 @@ fn send_recv_apply_test() {
         let dev2_start_stats = InterfaceStats::new(&dev2_if_name);
         log::debug!("interface_stats_start dev1 = {:?}", dev1_start_stats,);
         log::debug!("interface_stats_start dev2 = {:?}", dev2_start_stats,);
-        let pkts_to_send = 1000000 as u64;
+        let pkts_to_send = 100_000_000 as u64;
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
         let send_done = Arc::new(AtomicBool::new(false));
         let send_done_rx = send_done.clone();
 
-        let rx_timeout = Duration::from_secs(5);
-
         eprintln!("starting receiver");
         let recv_handle = thread::spawn(move || {
             let mut matched_recvd_pkts = 0;
             let mut recvd_nums = vec![false; pkts_to_send as usize];
-            let mut send_done_time: Option<Instant> = None;
             let start = Instant::now();
 
             let mut i = 0;
             while matched_recvd_pkts != pkts_to_send {
                 i += 1;
                 dev1.rx
-                    .recv_apply(|pkt| match SlicedPacket::from_ethernet(&pkt) {
+                    /*
+                    .recv_apply(|pkt|
+                        kmatch SlicedPacket::from_ethernet(&pkt) {
                         Ok(pkt) => {
                             if filter_pkt(&pkt, &filter) {
                                 let n = LittleEndian::read_u64(&pkt.payload[..8]);
@@ -266,6 +265,8 @@ fn send_recv_apply_test() {
                         }
                         Err(e) => log::warn!("failed to parse packet {:?}", e),
                     });
+                    */
+                    .recv_apply(|_| {});
 
                 if send_done_rx.load(Ordering::Relaxed) {
                     log::debug!("rx_checking send is done");
@@ -279,7 +280,7 @@ fn send_recv_apply_test() {
         });
 
         // give the receiver a chance to get going
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(50));
 
         eprintln!("starting sender");
         let send_handle = thread::spawn(move || {
@@ -311,7 +312,6 @@ fn send_recv_apply_test() {
 
         /*
         assert_eq!(dev1_tx_stats.pkts_tx, pkts_to_send);
-
         // we can receive extra packets due to random traffic
         assert!(dev2_rx_stats.pkts_rx >= pkts_to_send);
         */
@@ -324,10 +324,11 @@ fn send_recv_apply_test() {
 
         let dev1_end_stats = InterfaceStats::new(&dev1_if_name);
         let dev2_end_stats = InterfaceStats::new(&dev2_if_name);
-        log::debug!("interface_stats_end dev1 = {:?}", dev1_end_stats,);
-        log::debug!("interface_stats_end dev2 = {:?}", dev2_end_stats,);
 
-        let expected_recvd_nums: Vec<u64> = (0..pkts_to_send).into_iter().collect();
+        let dev1_iface_stats = dev1_end_stats - dev1_start_stats;
+        let dev2_iface_stats = dev2_end_stats - dev2_start_stats;
+        eprintln!("interface_stats dev1 = {:?}", dev1_iface_stats,);
+        eprintln!("interface_stats dev2 = {:?}", dev2_iface_stats,);
 
         let mut n_missing = 0;
         for (i, recvd) in recvd_nums.iter().enumerate() {
@@ -339,9 +340,8 @@ fn send_recv_apply_test() {
         assert_eq!(n_missing, 0);
     }
 
-    let mut dev1_xsk_config = build_configs();
-    let mut dev2_xsk_config = build_configs();
-    dev2_xsk_config.n_tx_frames = 32;
+    let dev1_xsk_config = build_configs();
+    let dev2_xsk_config = build_configs();
 
     setup::run_test_2(dev1_xsk_config, dev2_xsk_config, test_fn);
 }

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::read_to_string;
+use std::ops::Sub;
 
 /// Stats provided via /sys/class/net/IFACE/statistics/
 #[derive(Debug, Clone)]
@@ -15,6 +16,17 @@ impl InterfaceStats {
         let rx = InterfaceStatsRx::new(if_name).expect("failed to get rx stats");
         let tx = InterfaceStatsTx::new(if_name).expect("failed to get tx stats");
         Self { rx, tx }
+    }
+}
+
+impl Sub for InterfaceStats {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        Self {
+            tx: self.tx - other.tx,
+            rx: self.rx - other.rx,
+        }
     }
 }
 
@@ -81,6 +93,27 @@ impl InterfaceStatsRx {
     }
 }
 
+impl Sub for InterfaceStatsRx {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        Self {
+            rx_bytes: self.rx_bytes - other.rx_bytes,
+            rx_compressed: self.rx_compressed - other.rx_compressed,
+            rx_crc_errors: self.rx_crc_errors - other.rx_crc_errors,
+            rx_dropped: self.rx_dropped - other.rx_dropped,
+            rx_errors: self.rx_errors - other.rx_errors,
+            rx_fifo_errors: self.rx_fifo_errors - other.rx_fifo_errors,
+            rx_frame_errors: self.rx_frame_errors - other.rx_frame_errors,
+            rx_length_errors: self.rx_length_errors - other.rx_length_errors,
+            rx_missed_errors: self.rx_missed_errors - other.rx_missed_errors,
+            rx_nohandler: self.rx_nohandler - other.rx_nohandler,
+            rx_over_errors: self.rx_over_errors - other.rx_over_errors,
+            rx_packets: self.rx_packets - other.rx_packets,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct InterfaceStatsTx {
     tx_aborted_errors: u64,
@@ -137,5 +170,24 @@ impl InterfaceStatsTx {
         stats.tx_window_errors = *map.get("tx_window_errors")?;
 
         Some(stats)
+    }
+}
+
+impl Sub for InterfaceStatsTx {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        Self {
+            tx_aborted_errors: self.tx_aborted_errors - other.tx_aborted_errors,
+            tx_bytes: self.tx_bytes - other.tx_bytes,
+            tx_carrier_errors: self.tx_carrier_errors - other.tx_carrier_errors,
+            tx_compressed: self.tx_compressed - other.tx_compressed,
+            tx_dropped: self.tx_dropped - other.tx_dropped,
+            tx_errors: self.tx_errors - other.tx_errors,
+            tx_fifo_errors: self.tx_fifo_errors - other.tx_fifo_errors,
+            tx_heartbeat_errors: self.tx_heartbeat_errors - other.tx_heartbeat_errors,
+            tx_packets: self.tx_packets - other.tx_packets,
+            tx_window_errors: self.tx_window_errors - other.tx_window_errors,
+        }
     }
 }

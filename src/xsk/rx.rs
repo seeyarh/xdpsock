@@ -221,11 +221,7 @@ impl<'a> XskRx<'a> {
             self.rx_frames[rx_frame_index as usize].set_options(rx_frame_options);
 
             let frame = &self.rx_frames[rx_frame_index as usize];
-            let data = unsafe {
-                frame
-                    .read_from_umem_checked(frame.len())
-                    .expect("rx: failed to read from umem")
-            };
+            let data = unsafe { frame.read_from_umem(frame.len()) };
 
             // apply user function to data
             f(data);
