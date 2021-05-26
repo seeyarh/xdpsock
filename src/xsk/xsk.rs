@@ -8,22 +8,22 @@ use std::error::Error;
 pub const MAX_PACKET_SIZE: usize = 1500;
 
 /// AF_XDP socket
-pub struct Xsk<'a> {
-    pub if_name: &'a str,
-    pub fill_q: FillQueue<'a>,
-    pub comp_q: CompQueue<'a>,
-    pub tx_q: TxQueue<'a>,
-    pub rx_q: RxQueue<'a>,
-    pub tx_frames: Vec<Frame<'a>>,
-    pub rx_frames: Vec<Frame<'a>>,
-    pub umem: Umem<'a>,
+pub struct Xsk {
+    pub if_name: String,
+    pub fill_q: FillQueue,
+    pub comp_q: CompQueue,
+    pub tx_q: TxQueue,
+    pub rx_q: RxQueue,
+    pub tx_frames: Vec<Frame>,
+    pub rx_frames: Vec<Frame>,
+    pub umem: Umem,
     pub umem_config: UmemConfig,
     pub socket_config: SocketConfig,
 }
 
-impl<'a> Xsk<'a> {
+impl Xsk {
     pub fn new(
-        if_name: &'a str,
+        if_name: &str,
         queue_id: u32,
         umem_config: UmemConfig,
         socket_config: SocketConfig,
@@ -42,7 +42,7 @@ impl<'a> Xsk<'a> {
         let rx_frames = frames[n_tx_frames..].into();
 
         Self {
-            if_name,
+            if_name: if_name.into(),
             fill_q,
             comp_q,
             tx_q,
@@ -56,10 +56,10 @@ impl<'a> Xsk<'a> {
     }
 }
 /// AF_XDP socket
-pub struct Xsk2<'a> {
+pub struct Xsk2 {
     pub if_name: String,
-    pub tx: XskTx<'a>,
-    pub rx: XskRx<'a>,
+    pub tx: XskTx,
+    pub rx: XskRx,
 }
 
 pub struct Xsk2Config {
@@ -71,10 +71,10 @@ pub struct Xsk2Config {
     pub socket_config: SocketConfig,
 }
 
-unsafe impl<'a> Send for Xsk2<'a> {}
+unsafe impl Send for Xsk2 {}
 
-impl<'a> Xsk2<'a> {
-    pub fn from_config(config: Xsk2Config) -> Result<Xsk2<'a>, Box<dyn Error>> {
+impl Xsk2 {
+    pub fn from_config(config: Xsk2Config) -> Result<Xsk2, Box<dyn Error>> {
         Self::new(
             &config.if_name,
             config.queue_id,
@@ -91,7 +91,7 @@ impl<'a> Xsk2<'a> {
         socket_config: SocketConfig,
         n_tx_frames: usize,
         tx_batch_size: usize,
-    ) -> Result<Xsk2<'a>, Box<dyn Error>> {
+    ) -> Result<Xsk2, Box<dyn Error>> {
         if socket_config.tx_queue_size() < tx_batch_size as u32 {
             return Err("tx batch size too large".into());
         }

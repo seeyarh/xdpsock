@@ -106,7 +106,7 @@ fn filter_pkt(parsed_pkt: &SlicedPacket, filter: &Filter) -> bool {
 
 #[test]
 fn send_recv_test() {
-    fn test_fn(mut dev1: Xsk2<'static>, mut dev2: Xsk2<'static>) {
+    fn test_fn(mut dev1: Xsk2, mut dev2: Xsk2) {
         let dev1_if_name = dev1.if_name.clone();
         let dev2_if_name = dev2.if_name.clone();
         let dev1_start_stats = InterfaceStats::new(&dev1_if_name);
@@ -235,7 +235,7 @@ fn send_recv_test() {
 
 #[test]
 fn send_recv_apply_test() {
-    fn test_fn(mut dev1: Xsk2<'static>, mut dev2: Xsk2<'static>) {
+    fn test_fn(mut dev1: Xsk2, mut dev2: Xsk2) {
         let dev1_if_name = dev1.if_name.clone();
         let dev2_if_name = dev2.if_name.clone();
 

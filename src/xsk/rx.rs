@@ -35,13 +35,13 @@ pub struct RxConfig {}
 
 // TODO: recvd packets when dropped should mark the frame desc as free
 #[derive(Debug)]
-pub struct XskRx<'a> {
-    //_umem: Arc<Umem<'a>>,
-    pub fill_q: FillQueue<'a>,
-    pub rx_q: RxQueue<'a>,
-    pub rx_frames: Vec<Frame<'a>>,
+pub struct XskRx {
+    //_umem: Arc<Umem>,
+    pub fill_q: FillQueue,
+    pub rx_q: RxQueue,
+    pub rx_frames: Vec<Frame>,
     pub filled_frames: Vec<(usize, usize, u32)>,
-    pub processed_frames: Vec<Frame<'a>>,
+    pub processed_frames: Vec<Frame>,
     pub rx_frame_offset: usize,
     pub n_frames_to_be_filled: u64,
     pub frame_size: u32,
@@ -50,12 +50,12 @@ pub struct XskRx<'a> {
     pub stats: RxStats,
 }
 
-impl<'a> XskRx<'a> {
+impl XskRx {
     pub fn new(
-        //umem: Arc<Umem<'a>>,
-        rx_q: RxQueue<'a>,
-        mut fill_q: FillQueue<'a>,
-        mut rx_frames: Vec<Frame<'a>>,
+        //umem: Arc<Umem>,
+        rx_q: RxQueue,
+        mut fill_q: FillQueue,
+        mut rx_frames: Vec<Frame>,
         frame_size: u32,
     ) -> Self {
         let n_rx_frames = rx_frames.len();

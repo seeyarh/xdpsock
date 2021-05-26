@@ -1,7 +1,7 @@
 use errno::errno;
 use libbpf_sys::{xsk_ring_cons, xsk_ring_prod, xsk_umem, xsk_umem_config, XDP_PACKET_HEADROOM};
 use std::sync::Arc;
-use std::{convert::TryInto, error::Error, fmt, io, marker::PhantomData, mem::MaybeUninit, ptr};
+use std::{convert::TryInto, error::Error, fmt, io, mem::MaybeUninit, ptr};
 
 use crate::socket::{self, Fd};
 
@@ -39,17 +39,16 @@ impl FrameStatus {
 /// kernel and dictates the number of bytes the user should read from
 /// the UMEM.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Frame<'umem> {
+pub struct Frame {
     addr: usize,
     len: usize,
     options: u32,
     mtu: usize,
-    _marker: PhantomData<&'umem ()>,
     mmap_area: Arc<MmapArea>,
     pub status: FrameStatus,
 }
 
-impl Frame<'_> {
+impl Frame {
     #[inline]
     pub fn addr(&self) -> usize {
         self.addr
@@ -273,11 +272,10 @@ impl Drop for XskUmem {
 /// frames.  It provides the underlying working memory for an AF_XDP
 /// socket.
 #[derive(Debug)]
-pub struct Umem<'a> {
+pub struct Umem {
     config: UmemConfig,
     mtu: usize,
     inner: Box<XskUmem>,
-    _marker: PhantomData<&'a ()>,
 }
 
 impl UmemBuilder {
@@ -297,16 +295,14 @@ impl UmemBuilder {
     }
 }
 
-impl<'a> UmemBuilderWithMmap {
+impl UmemBuilderWithMmap {
     /// Using the allocated memory region, create the UMEM.
     ///
     /// Once we've successfully requested a region of memory, create
     /// the UMEM with it by splitting the memory region into frames
     /// and creating the [FillQueue](struct.FillQueue.html) and
     /// [CompQueue](struct.CompQueue.html).
-    pub fn create_umem(
-        mut self,
-    ) -> io::Result<(Umem<'a>, FillQueue<'a>, CompQueue<'a>, Vec<Frame<'a>>)> {
+    pub fn create_umem(mut self) -> io::Result<(Umem, FillQueue, CompQueue, Vec<Frame>)> {
         let umem_create_config = xsk_umem_config {
             fill_size: self.config.fill_queue_size(),
             comp_size: self.config.comp_queue_size(),
@@ -359,7 +355,6 @@ impl<'a> UmemBuilderWithMmap {
                 len,
                 options,
                 mtu,
-                _marker: PhantomData,
                 mmap_area: mmap.clone(),
                 status: FrameStatus::Free,
             };
@@ -370,27 +365,24 @@ impl<'a> UmemBuilderWithMmap {
         let fill_queue = FillQueue {
             size: self.config.fill_queue_size(),
             inner: unsafe { Box::new(fq_ptr.assume_init()) },
-            _marker: PhantomData,
         };
 
         let comp_queue = CompQueue {
             size: self.config.comp_queue_size(),
             inner: unsafe { Box::new(cq_ptr.assume_init()) },
-            _marker: PhantomData,
         };
 
         let umem = Umem {
             config: self.config,
             mtu,
             inner: Box::new(XskUmem(umem_ptr)),
-            _marker: PhantomData,
         };
 
         Ok((umem, fill_queue, comp_queue, frames))
     }
 }
 
-impl Umem<'_> {
+impl Umem {
     pub fn builder(config: UmemConfig) -> UmemBuilder {
         UmemBuilder { config }
     }
@@ -423,13 +415,12 @@ impl Umem<'_> {
 /// For more information see the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#umem-fill-ring)
 #[derive(Debug)]
-pub struct FillQueue<'umem> {
+pub struct FillQueue {
     size: u32,
     inner: Box<xsk_ring_prod>,
-    _marker: PhantomData<&'umem ()>,
 }
 
-impl FillQueue<'_> {
+impl FillQueue {
     /// Let the kernel know that the frames in `descs` may be used to
     /// receive data.
     ///
@@ -524,7 +515,7 @@ impl FillQueue<'_> {
     }
 }
 
-unsafe impl Send for FillQueue<'_> {}
+unsafe impl Send for FillQueue {}
 
 /// Used to transfer ownership of UMEM frames from kernel-space to
 /// user-space.
@@ -535,13 +526,12 @@ unsafe impl Send for FillQueue<'_> {}
 /// For more information see the
 /// [docs](https://www.kernel.org/doc/html/latest/networking/af_xdp.html#umem-completion-ring)
 #[derive(Debug)]
-pub struct CompQueue<'umem> {
+pub struct CompQueue {
     size: u32,
     inner: Box<xsk_ring_cons>,
-    _marker: PhantomData<&'umem ()>,
 }
 
-impl CompQueue<'_> {
+impl CompQueue {
     /// Update `descs` with frames whose contents have been sent
     /// (after submission via the [TxQueue](struct.TxQueue.html) and
     /// may now be used again.
@@ -574,7 +564,7 @@ impl CompQueue<'_> {
     }
 }
 
-unsafe impl Send for CompQueue<'_> {}
+unsafe impl Send for CompQueue {}
 
 /// UMEM access errors
 #[derive(Debug)]
@@ -664,6 +654,8 @@ impl Error for WriteError {}
 mod tests {
     use rand;
 
+    use serial_test::serial;
+
     use super::*;
     use crate::umem::UmemConfig;
 
@@ -678,7 +670,7 @@ mod tests {
         UmemConfig::new(FRAME_COUNT, FRAME_SIZE, 4, 4, 0, false).unwrap()
     }
 
-    fn umem<'a>() -> (Umem<'a>, FillQueue<'a>, CompQueue<'a>, Vec<Frame<'a>>) {
+    fn umem() -> (Umem, FillQueue, CompQueue, Vec<Frame>) {
         let config = umem_config();
 
         Umem::builder(config)
@@ -689,6 +681,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn umem_create_succeeds_when_frame_count_is_one() {
         let config = UmemConfig::new(1, 4096, 4, 4, 0, false).unwrap();
 
@@ -700,6 +693,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn umem_create_succeeds_when_fill_size_is_one() {
         let config = UmemConfig::new(16, 4096, 1, 4, 0, false).unwrap();
 
@@ -711,6 +705,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn umem_create_succeeds_when_comp_size_is_one() {
         let config = UmemConfig::new(16, 4096, 4, 1, 0, false).unwrap();
 
@@ -722,6 +717,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[should_panic]
     fn umem_create_fails_when_frame_size_is_lt_2048() {
         let config = UmemConfig::new(1, 2047, 4, 4, 0, false).unwrap();
@@ -734,6 +730,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn mtu_is_correct() {
         let config = UmemConfig::new(1, 2048, 4, 4, 512, false).unwrap();
 
@@ -747,6 +744,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn umem_access_checks_ok() {
         /*
         let (_umem, _fq, _cq, frames) = umem();
@@ -774,6 +772,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn data_checks_ok() {
         let (_umem, _fq, _cq, frames) = umem();
 
@@ -804,6 +803,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn write_no_data_to_umem() {
         let (mut _umem, _fq, _cq, mut frames) = umem();
 
@@ -817,6 +817,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn write_to_umem_frame_then_read_small_byte_array() {
         let (mut _umem, _fq, _cq, mut frames) = umem();
 
@@ -834,6 +835,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn write_max_bytes_to_neighbouring_umem_frames() {
         let (mut _umem, _fq, _cq, mut frames) = umem();
 
