@@ -84,13 +84,23 @@ impl<'a> XskTx<'a> {
             tx_frames,
             free_frames: vec![0; n_tx_frames],
             outstanding_tx_frames: 0,
-            tx_poll_ms_timeout: 0,
+            tx_poll_ms_timeout: -1,
             tx_cursor: 0,
             frame_size,
             stats: TxStats::new(),
             // TODO: Add integration tests to make sure this is working
             batch_size,
             cur_batch_size: 0,
+        }
+    }
+
+    pub fn prefill(&mut self, data: &[u8]) {
+        for frame in self.tx_frames.iter_mut() {
+            unsafe {
+                frame
+                    .write_to_umem_checked(data)
+                    .expect("failed to write to umem");
+            }
         }
     }
 
@@ -108,6 +118,40 @@ impl<'a> XskTx<'a> {
                 .write_to_umem_checked(data)
                 .expect("failed to write to umem");
         }
+
+        self.tx_cursor = (self.tx_cursor + 1) % self.tx_frames.len();
+        self.cur_batch_size += 1;
+
+        log::debug!(
+            "tx: cur_batch_size = {}, batch_size = {}",
+            self.cur_batch_size,
+            self.batch_size
+        );
+
+        // Add consumed frames back to the tx queue
+        if self.cur_batch_size == self.batch_size {
+            self.put_batch_on_tx_queue();
+        }
+
+        Ok(())
+    }
+
+    pub fn send_apply<F>(&mut self, mut f: F) -> Result<(), XskSendError>
+    where
+        F: FnMut(&mut [u8]) -> usize,
+    {
+        log::debug!("tx: tx_cursor = {}", self.tx_cursor);
+
+        self.complete_frames();
+
+        if !self.tx_frames[self.tx_cursor].status.is_free() {
+            return Err(XskSendError::NoFreeTxFrames);
+        }
+
+        let data =
+            unsafe { self.tx_frames[self.tx_cursor].umem_region_mut(self.frame_size as usize) };
+        let len = f(data);
+        self.tx_frames[self.tx_cursor].set_len(len);
 
         self.tx_cursor = (self.tx_cursor + 1) % self.tx_frames.len();
         self.cur_batch_size += 1;
@@ -177,6 +221,7 @@ impl<'a> XskTx<'a> {
 
         self.stats.pkts_tx_completed += n_free_frames;
 
+        /*
         if n_free_frames == 0 {
             log::debug!("comp_q.consume() consumed 0 frames");
             if self.tx_q.needs_wakeup() {
@@ -185,6 +230,7 @@ impl<'a> XskTx<'a> {
                 log::debug!("tx: woke up tx_q");
             }
         }
+        */
         log::debug!("tx: comp_q.consume() consumed {} frames", n_free_frames);
 
         self.update_tx_frames(n_free_frames as usize);

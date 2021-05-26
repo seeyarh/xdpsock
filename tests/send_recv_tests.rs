@@ -236,7 +236,7 @@ fn send_recv_apply_test() {
         let dev2_start_stats = InterfaceStats::new(&dev2_if_name);
         log::debug!("interface_stats_start dev1 = {:?}", dev1_start_stats,);
         log::debug!("interface_stats_start dev2 = {:?}", dev2_start_stats,);
-        let pkts_to_send = 100_000_000 as u64;
+        let pkts_to_send = 1_000_000 as u64;
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
@@ -253,20 +253,19 @@ fn send_recv_apply_test() {
             while matched_recvd_pkts != pkts_to_send {
                 i += 1;
                 dev1.rx
-                    /*
-                    .recv_apply(|pkt|
-                        kmatch SlicedPacket::from_ethernet(&pkt) {
+                    .recv_apply(|pkt| match SlicedPacket::from_ethernet(&pkt) {
                         Ok(pkt) => {
                             if filter_pkt(&pkt, &filter) {
                                 let n = LittleEndian::read_u64(&pkt.payload[..8]);
+                                log::debug!("test_recv {}", n);
                                 recvd_nums[n as usize] = true;
                                 matched_recvd_pkts += 1;
                             }
                         }
-                        Err(e) => log::warn!("failed to parse packet {:?}", e),
+                        Err(e) => {
+                            log::warn!("failed to parse packet {:?}", e);
+                        }
                     });
-                    */
-                    .recv_apply(|_| {});
 
                 if send_done_rx.load(Ordering::Relaxed) {
                     log::debug!("rx_checking send is done");
@@ -284,20 +283,19 @@ fn send_recv_apply_test() {
 
         eprintln!("starting sender");
         let send_handle = thread::spawn(move || {
-            let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
             let mut payload: [u8; 8] = [0; 8];
 
             let start = Instant::now();
             for i in 0..pkts_to_send {
-                //thread::sleep(Duration::from_millis(1));
-                let pkt_builder = PacketBuilder::ethernet2([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
-                    .ipv4(SRC_IP, DST_IP, 20)
-                    .udp(SRC_PORT, DST_PORT);
+                while let Err(_) = dev2.tx.send_apply(|mut pkt| {
+                    let pkt_builder =
+                        PacketBuilder::ethernet2([0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
+                            .ipv4(SRC_IP, DST_IP, 20)
+                            .udp(SRC_PORT, DST_PORT);
 
-                LittleEndian::write_u64(&mut payload, i);
-                let len_pkt = generate_pkt(&mut pkt[..], &mut payload[..], pkt_builder);
-
-                while let Err(_) = dev2.tx.send(&pkt[..len_pkt]) {}
+                    LittleEndian::write_u64(&mut payload, i);
+                    generate_pkt(&mut pkt, &mut payload[..], pkt_builder)
+                }) {}
             }
 
             dev2.tx.drain();

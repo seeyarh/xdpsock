@@ -224,7 +224,7 @@ impl Frame<'_> {
     /// `write_to_umem` or `write_to_umem_checked` to avoid the
     /// overhead of updating the frame descriptor.
     #[inline]
-    pub unsafe fn umem_region_mut(&mut self, len: &usize) -> &mut [u8] {
+    pub unsafe fn umem_region_mut(&mut self, len: usize) -> &mut [u8] {
         self.mmap_area.mem_range_mut(&self.addr, &len)
     }
 

@@ -10,6 +10,7 @@ use etherparse::{
 };
 
 use xdpsock::{
+    iface::InterfaceStats,
     socket::{BindFlags, SocketConfig, SocketConfigBuilder, XdpFlags},
     umem::{UmemConfig, UmemConfigBuilder},
     xsk::{Xsk2, MAX_PACKET_SIZE},
@@ -134,7 +135,6 @@ fn main() {
     env_logger::init();
     let opts: Opts = Opts::parse();
     eprintln!("{:?}", opts);
-
     spawn_threads(opts);
 }
 
@@ -194,6 +194,9 @@ fn spawn_threads(opts: Opts) {
     let n_queues = opts.queues.len();
     let queues = opts.queues.clone();
 
+    let iface_stats_start = InterfaceStats::new(&opts.dev);
+    eprintln!("{:#?}", iface_stats_start);
+
     let start = Instant::now();
     for (i, queue) in queues.into_iter().enumerate() {
         let (umem_config, socket_config) = build_umem_socket_config(&opts);
@@ -221,10 +224,24 @@ fn spawn_threads(opts: Opts) {
     let end = start.elapsed();
     let duration_secs = end.as_secs_f64();
     let pps = opts.n_pkts as f64 / duration_secs;
+
+    match opts.mode {
+        Mode::Tx => eprintln!("XDP Tx Stats"),
+        Mode::Rx => eprintln!("XDP Rx Stats"),
+    }
+
     eprintln!(
-        "sent {} pkts in {} seconds, {} pps",
+        "{} pkts in {} seconds, {} pps",
         opts.n_pkts, duration_secs, pps
     );
+
+    let iface_stats_end = InterfaceStats::new(&opts.dev);
+    let iface_stats = iface_stats_end - iface_stats_start;
+    eprintln!("NIC Stats");
+    match opts.mode {
+        Mode::Tx => eprintln!("{:#?}", iface_stats.tx),
+        Mode::Rx => eprintln!("{:#?}", iface_stats.rx),
+    }
 }
 
 fn split_pkts(n_pkts: u64, queue_index: u64, n_queues: u64) -> impl Iterator<Item = u64> {
@@ -234,20 +251,23 @@ fn split_pkts(n_pkts: u64, queue_index: u64, n_queues: u64) -> impl Iterator<Ite
 }
 
 fn tx_pkts(mut xsk: Xsk2, filter: Filter, pkts: impl Iterator<Item = u64>) {
-    let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+    let mut prefill_pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
     let mut payload: [u8; 8] = [0; 8];
 
     let pkt_builder = PacketBuilder::ethernet2(filter.src_mac, filter.dest_mac)
         .ipv4(filter.src_ip, filter.dest_ip, 20)
         .udp(filter.src_port, filter.dest_port);
-    let len_pkt = generate_pkt(&mut pkt[..], &mut payload[..], pkt_builder);
+    let len_pkt = generate_pkt(&mut prefill_pkt[..], &mut payload[..], pkt_builder);
+
+    xsk.tx.prefill(&prefill_pkt[..len_pkt]);
 
     for i in pkts {
-        log::debug!("tx_pkts: sending {}", i);
-        let mut payload = &mut pkt[len_pkt - 8..len_pkt];
-        LittleEndian::write_u64(&mut payload, i);
-        drop(payload);
-        while let Err(_) = xsk.tx.send(&pkt[..len_pkt]) {}
+        while let Err(_) = xsk.tx.send_apply(|pkt| {
+            let mut payload = &mut pkt[len_pkt - 8..len_pkt];
+            LittleEndian::write_u64(&mut payload, i);
+            drop(payload);
+            len_pkt + 8
+        }) {}
     }
 
     xsk.tx.drain();
@@ -272,9 +292,7 @@ fn generate_pkt(
 const DEFAULT_TIMEOUT: u64 = 30;
 
 fn rx_pkts(mut xsk: Xsk2, filter: Filter, n_pkts: u64, timeout_sec: Option<u64>) {
-    let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
     let mut matched_recvd_pkts = 0;
-    //let mut recvd_nums: HashSet<u64> = HashSet::with_capacity(n_pkts as usize);
     let mut recvd_nums = vec![false; n_pkts as usize];
     let start = Instant::now();
 
@@ -293,9 +311,8 @@ fn rx_pkts(mut xsk: Xsk2, filter: Filter, n_pkts: u64, timeout_sec: Option<u64>)
             }
         }
 
-        let len_recvd = xsk.rx.recv(&mut pkt[..]);
-        if len_recvd > 0 {
-            match SlicedPacket::from_ethernet(&pkt[..len_recvd]) {
+        xsk.rx
+            .recv_apply(|pkt| match SlicedPacket::from_ethernet(&pkt) {
                 Ok(pkt) => {
                     if filter_pkt(&pkt, &filter) {
                         let n = LittleEndian::read_u64(&pkt.payload[..8]);
@@ -304,8 +321,10 @@ fn rx_pkts(mut xsk: Xsk2, filter: Filter, n_pkts: u64, timeout_sec: Option<u64>)
                     }
                 }
                 Err(e) => log::warn!("failed to parse packet {:?}", e),
-            }
-        }
+            });
+        /*
+        .recv_apply(|_| {});
+        */
     }
 
     let mut n_missing = 0;

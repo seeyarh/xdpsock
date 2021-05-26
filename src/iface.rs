@@ -7,8 +7,8 @@ use std::ops::Sub;
 /// Stats provided via /sys/class/net/IFACE/statistics/
 #[derive(Debug, Clone)]
 pub struct InterfaceStats {
-    tx: InterfaceStatsTx,
-    rx: InterfaceStatsRx,
+    pub tx: InterfaceStatsTx,
+    pub rx: InterfaceStatsRx,
 }
 
 impl InterfaceStats {
