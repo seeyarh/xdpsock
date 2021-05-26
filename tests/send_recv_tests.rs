@@ -1,8 +1,6 @@
 mod setup;
 
 use std::error::Error;
-use std::fs::File;
-use std::io::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -109,10 +107,12 @@ fn filter_pkt(parsed_pkt: &SlicedPacket, filter: &Filter) -> bool {
 #[test]
 fn send_recv_test() {
     fn test_fn(mut dev1: Xsk2<'static>, mut dev2: Xsk2<'static>) {
-        let dev1_start_stats = InterfaceStats::new(&dev1.if_name);
-        let dev2_start_stats = InterfaceStats::new(&dev2.if_name);
+        let dev1_if_name = dev1.if_name.clone();
+        let dev2_if_name = dev2.if_name.clone();
+        let dev1_start_stats = InterfaceStats::new(&dev1_if_name);
+        let dev2_start_stats = InterfaceStats::new(&dev2_if_name);
 
-        let pkts_to_send = 1_000_000 as u64;
+        let pkts_to_send = 100_000 as u64;
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
@@ -160,7 +160,6 @@ fn send_recv_test() {
                 }
             }
 
-            dbg!(i);
             let duration = start.elapsed();
             eprintln!("receive time is: {:?}", duration);
             (dev1.rx.stats(), recvd_nums)
@@ -210,8 +209,16 @@ fn send_recv_test() {
         eprintln!("tx stats {:?}", tx_stats);
         eprintln!("rx stats {:?}", rx_stats);
 
+        let dev1_end_stats = InterfaceStats::new(&dev1_if_name);
+        let dev2_end_stats = InterfaceStats::new(&dev2_if_name);
+
+        let dev1_iface_stats = dev1_end_stats - dev1_start_stats;
+        let dev2_iface_stats = dev2_end_stats - dev2_start_stats;
+        eprintln!("interface_stats dev1 = {:?}", dev1_iface_stats,);
+        eprintln!("interface_stats dev2 = {:?}", dev2_iface_stats,);
+
         let mut n_missing = 0;
-        for (i, recvd) in recvd_nums.iter().enumerate() {
+        for (_i, recvd) in recvd_nums.iter().enumerate() {
             if !recvd {
                 //log::debug!("missing {}", i);
                 n_missing += 1;
@@ -249,9 +256,7 @@ fn send_recv_apply_test() {
             let mut recvd_nums = vec![false; pkts_to_send as usize];
             let start = Instant::now();
 
-            let mut i = 0;
             while matched_recvd_pkts != pkts_to_send {
-                i += 1;
                 dev1.rx
                     .recv_apply(|pkt| match SlicedPacket::from_ethernet(&pkt) {
                         Ok(pkt) => {
@@ -272,7 +277,6 @@ fn send_recv_apply_test() {
                     break;
                 }
             }
-            dbg!(i);
             let duration = start.elapsed();
             eprintln!("receive time is: {:?}", duration);
             (dev1.rx.stats(), recvd_nums)
@@ -331,7 +335,7 @@ fn send_recv_apply_test() {
         let mut n_missing = 0;
         for (i, recvd) in recvd_nums.iter().enumerate() {
             if !recvd {
-                log::debug!("missing {}", i);
+                log::debug!("send_recv_apply_test: missing {}", i);
                 n_missing += 1;
             }
         }

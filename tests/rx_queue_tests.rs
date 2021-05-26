@@ -1,11 +1,10 @@
-/*
 mod setup;
 use libbpf_sys::XDP_PACKET_HEADROOM;
 use rusty_fork::rusty_fork_test;
 use std::{thread, time::Duration};
 use xdpsock::{
     socket::{SocketConfig, SocketConfigBuilder},
-    umem::{Frame, UmemConfig, UmemConfigBuilder},
+    umem::{UmemConfig, UmemConfigBuilder},
     xsk::Xsk,
 };
 
@@ -103,9 +102,7 @@ rusty_fork_test! {
             let mut filled_frames = vec![(0, 0, 0); n_rx_frames];
 
             // Add a frame in the dev1 fill queue ready to receive
-            let mut rx_frames: Vec<&Frame> = dev1.rx_frames.iter().collect();
-
-            assert_eq!(unsafe { dev1.fill_q.produce(&mut rx_frames[0..1]) }, 1);
+            assert_eq!(unsafe { dev1.fill_q.produce(&mut dev1.rx_frames[0..1]) }, 1);
 
             // Data to send from dev2
             let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
@@ -180,10 +177,9 @@ rusty_fork_test! {
         fn test_fn(mut dev1: Xsk, mut dev2: Xsk) {
             let n_rx_frames = dev1.rx_frames.len();
             let mut filled_frames = vec![(0, 0, 0); n_rx_frames];
-            let rx_frames: Vec<&Frame> = dev1.rx_frames.iter().collect();
 
             // Add a frame in the dev1 fill queue ready to receive
-            assert_eq!(unsafe { dev1.fill_q.produce(&rx_frames[..1]) }, 1);
+            assert_eq!(unsafe { dev1.fill_q.produce(&dev1.rx_frames[..1]) }, 1);
 
             // Data to send from dev2
             let pkt = vec![b'H', b'e', b'l', b'l', b'o'];
@@ -255,4 +251,3 @@ rusty_fork_test! {
         );
     }
 }
-*/
