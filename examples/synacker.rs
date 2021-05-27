@@ -1,18 +1,17 @@
 use std::error::Error;
 use std::net::Ipv4Addr;
-use std::thread;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use clap::Clap;
-use crossbeam_channel::{bounded, select, tick, Receiver};
-use etherparse::{
-    Ethernet2HeaderSlice, InternetSlice, IpHeader, LinkSlice, PacketBuilder, PacketBuilderStep,
-    PacketHeaders, SlicedPacket, TransportHeader, TransportSlice, UdpHeader,
-};
+use etherparse::{InternetSlice, LinkSlice, PacketBuilder, SlicedPacket, TransportSlice};
 
 use xdpsock::{
-    socket::{BindFlags, SocketConfig, SocketConfigBuilder, XdpFlags},
-    umem::{UmemConfig, UmemConfigBuilder},
+    socket::{BindFlags, SocketConfigBuilder, XdpFlags},
+    umem::UmemConfigBuilder,
     xsk::{Xsk2, MAX_PACKET_SIZE},
 };
 
@@ -43,6 +42,10 @@ struct Opts {
     /// A level of verbosity, and can be used multiple times
     #[clap(short, long, parse(from_occurrences))]
     verbose: i32,
+
+    /// Number of seconds before the sender/receiver will timeout
+    #[clap(short, long)]
+    timeout_sec: Option<u64>,
 }
 
 fn main() {
@@ -67,13 +70,15 @@ fn main() {
     let n_tx_frames = umem_config.frame_count() / 2;
 
     let dev_ifname = opts.dev.clone();
-    let mut xsk = Xsk2::new(
+    let xsk = Xsk2::new(
         &dev_ifname,
         0,
         umem_config,
         socket_config,
         n_tx_frames as usize,
-    );
+        1,
+    )
+    .expect("failed to build xsk");
 
     spawn_rx(xsk, opts);
 }
@@ -151,55 +156,51 @@ impl Filter {
     }
 }
 
-fn spawn_rx(mut xsk: Xsk2, opts: Opts) {
-    let rx_recv = xsk.rx_receiver().unwrap();
+const DEFAULT_TIMEOUT: u64 = 30;
 
+fn spawn_rx(mut xsk: Xsk2, opts: Opts) {
     let filter = Filter::new(&opts.src_ip, opts.src_port, &opts.dest_ip, opts.dest_port).unwrap();
 
-    let ctrl_c_events = ctrl_channel().expect("failed to get ctrl c channel");
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
 
-    loop {
-        select! {
-            recv(rx_recv) -> recvd =>  {
-                log::debug!("synacker: received packet");
-                let (pkt, len) = recvd.expect("failed to receive pkt");
-                match SlicedPacket::from_ethernet(&pkt[..len]) {
-                    Ok(pkt) => {
-                        if filter.filter(&pkt) {
-                            log::debug!("synacker: found match {:?}", pkt);
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
 
-                            if let Some(synack) = generate_synack(&pkt) {
-                                log::debug!("synacker: sending synack {:?}", synack);
-                                xsk.send(&synack);
-                            }
+    let mut pkt: [u8; MAX_PACKET_SIZE] = [0; MAX_PACKET_SIZE];
+
+    let start = Instant::now();
+    let timeout = match opts.timeout_sec {
+        Some(timeout) => Duration::from_secs(timeout),
+        None => Duration::from_secs(DEFAULT_TIMEOUT),
+    };
+
+    while running.load(Ordering::SeqCst) && start.elapsed() < timeout {
+        log::debug!("synacker: received packet");
+        let len_recvd = xsk.rx.recv(&mut pkt[..]);
+        if len_recvd > 0 {
+            match SlicedPacket::from_ethernet(&pkt[..len_recvd]) {
+                Ok(pkt) => {
+                    if filter.filter(&pkt) {
+                        log::debug!("synacker: found match {:?}", pkt);
+
+                        if let Some(synack) = generate_synack(&pkt) {
+                            log::debug!("synacker: sending synack {:?}", synack);
+                            while let Err(_) = xsk.tx.send(&synack) {}
                         }
                     }
-                    Err(e) => log::warn!("failed to parse packet {:?}", e),
                 }
-            }
-            recv(ctrl_c_events) -> _ => {
-                break;
+                Err(e) => log::warn!("failed to parse packet {:?}", e),
             }
         }
     }
 
-    thread::sleep(Duration::from_secs(30));
-    let rx_stats = xsk.shutdown_rx().expect("failed to shut down rx");
+    let rx_stats = xsk.rx.stats();
     eprintln!("rx_stats = {:?}", rx_stats);
     eprintln!("rx duration = {:?}", rx_stats.duration());
     eprintln!("rx pps = {:?}", rx_stats.pps());
-
-    let tx_stats = xsk.shutdown_tx().expect("failed to shut down tx");
-    eprintln!("tx_stats = {:?}", tx_stats);
-}
-
-fn ctrl_channel() -> Result<Receiver<()>, ctrlc::Error> {
-    let (sender, receiver) = bounded(100);
-    ctrlc::set_handler(move || {
-        let _ = sender.send(());
-    })?;
-
-    Ok(receiver)
 }
 
 fn generate_synack(recvd: &SlicedPacket) -> Option<Vec<u8>> {

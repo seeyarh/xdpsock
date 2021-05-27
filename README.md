@@ -2,6 +2,7 @@
 
 A Rust interface for the Linux AF_XDP address family.
 
+WARNING: This is a work in progress.
 
 
 [API documentation](https://docs.rs/xdpsock).

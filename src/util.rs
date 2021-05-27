@@ -9,6 +9,7 @@ pub(crate) fn is_pow_of_two(val: u32) -> bool {
     (val & (val - 1)) == 0
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;

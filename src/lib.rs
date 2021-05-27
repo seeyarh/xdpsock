@@ -49,6 +49,8 @@ pub mod xsk;
 #[cfg(all(target_pointer_width = "64", target_family = "unix"))]
 mod util;
 
+pub mod iface;
+
 #[cfg(all(target_pointer_width = "64", target_family = "unix"))]
 pub use socket::{
     BindFlags, LibbpfFlags, RxQueue, Socket, SocketConfig, SocketConfigBuilder, TxQueue, XdpFlags,
@@ -59,6 +61,8 @@ pub use umem::{
     AccessError, CompQueue, DataError, FillQueue, Frame, Umem, UmemBuilder, UmemConfig,
     UmemConfigBuilder, WriteError,
 };
+
+pub use iface::*;
 
 #[cfg(test)]
 mod tests {
