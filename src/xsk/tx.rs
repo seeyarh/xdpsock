@@ -52,11 +52,11 @@ impl fmt::Display for XskSendError {
 impl Error for XskSendError {}
 
 #[derive(Debug)]
-pub struct XskTx<'a> {
-    //_umem: Arc<Umem<'a>>,
-    pub tx_q: TxQueue<'a>,
-    pub comp_q: CompQueue<'a>,
-    pub tx_frames: Vec<Frame<'a>>,
+pub struct XskTx {
+    //_umem: Arc<Umem>,
+    pub tx_q: TxQueue,
+    pub comp_q: CompQueue,
+    pub tx_frames: Vec<Frame>,
     pub free_frames: Vec<u64>,
     pub outstanding_tx_frames: u64,
     pub tx_poll_ms_timeout: i32,
@@ -67,12 +67,12 @@ pub struct XskTx<'a> {
     pub cur_batch_size: usize,
 }
 
-impl<'a> XskTx<'a> {
+impl XskTx {
     pub fn new(
-        //umem: Arc<Umem<'a>>,
-        tx_q: TxQueue<'a>,
-        comp_q: CompQueue<'a>,
-        tx_frames: Vec<Frame<'a>>,
+        //umem: Arc<Umem>,
+        tx_q: TxQueue,
+        comp_q: CompQueue,
+        tx_frames: Vec<Frame>,
         frame_size: u32,
         batch_size: usize,
     ) -> Self {

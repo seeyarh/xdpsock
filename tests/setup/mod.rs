@@ -58,7 +58,7 @@ pub fn run_test<F>(
 
 pub fn run_test_2<F>(mut dev1_xsk_config: Xsk2Config, mut dev2_xsk_config: Xsk2Config, test: F)
 where
-    F: Fn(Xsk2<'static>, Xsk2<'static>) + Send + 'static,
+    F: Fn(Xsk2, Xsk2) + Send + 'static,
 {
     setup_logging();
     let inner = move |dev1_if_name: String, dev2_if_name: String| {
