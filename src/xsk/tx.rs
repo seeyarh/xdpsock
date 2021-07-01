@@ -180,12 +180,15 @@ impl XskTx {
             return;
         }
 
-        let mut start = self.tx_cursor - self.cur_batch_size;
-        let mut end = self.tx_cursor;
-        if self.tx_cursor == 0 {
-            start = self.tx_frames.len() - self.cur_batch_size;
-            end = self.tx_frames.len();
-        }
+        let (start, end) = if self.tx_cursor == 0 {
+            let start = self.tx_frames.len() - self.cur_batch_size;
+            let end = self.tx_frames.len();
+            (start, end)
+        } else {
+            let start = self.tx_cursor - self.cur_batch_size;
+            let end = self.tx_cursor;
+            (start, end)
+        };
         log::debug!("tx: adding tx_frames[{}..{}] to tx queue", start, end);
 
         for frame in self.tx_frames[start..end].iter_mut() {

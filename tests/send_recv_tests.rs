@@ -112,7 +112,7 @@ fn send_recv_test() {
         let dev1_start_stats = InterfaceStats::new(&dev1_if_name);
         let dev2_start_stats = InterfaceStats::new(&dev2_if_name);
 
-        let pkts_to_send = 100_000 as u64;
+        let pkts_to_send = 10_000 as u64;
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
@@ -243,7 +243,7 @@ fn send_recv_apply_test() {
         let dev2_start_stats = InterfaceStats::new(&dev2_if_name);
         log::debug!("interface_stats_start dev1 = {:?}", dev1_start_stats,);
         log::debug!("interface_stats_start dev2 = {:?}", dev2_start_stats,);
-        let pkts_to_send = 1_000_000 as u64;
+        let pkts_to_send = 10_000 as u64;
 
         let filter = Filter::new(SRC_IP, SRC_PORT, DST_IP, DST_PORT).unwrap();
 
